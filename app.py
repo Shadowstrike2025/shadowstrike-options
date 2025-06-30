@@ -48,6 +48,37 @@ class Trade(db.Model):
     
     user = db.relationship('User', backref='trades')
 
+# Database initialization function
+def init_database():
+    try:
+        with app.app_context():
+            # Drop all tables and recreate (for clean start)
+            db.drop_all()
+            db.create_all()
+            
+            # Create demo admin user
+            admin = User(
+                username='admin',
+                email='admin@shadowstrike.com',
+                password_hash=generate_password_hash('admin123')
+            )
+            db.session.add(admin)
+            
+            # Create demo user
+            demo = User(
+                username='demo',
+                email='demo@shadowstrike.com',
+                password_hash=generate_password_hash('demo123')
+            )
+            db.session.add(demo)
+            
+            db.session.commit()
+            logger.info("Database initialized successfully!")
+            return True
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+        return False
+
 # Routes
 @app.route('/')
 def index():
@@ -56,70 +87,120 @@ def index():
     except Exception as e:
         logger.error(f"Error rendering welcome.html: {e}")
         return f"""
+        <!DOCTYPE html>
+        <html><head><title>ShadowStrike Options</title></head>
+        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
         <h1>🎯 ShadowStrike Options</h1>
-        <p>Platform is running! Template error: {e}</p>
-        <a href="/login">Login</a> | <a href="/register">Register</a> | <a href="/status">Status</a>
+        <p>Elite Trading Platform</p>
+        <p><a href="/init-db" style="color: #10b981;">Initialize Database</a> | 
+        <a href="/login" style="color: #10b981;">Login</a> | 
+        <a href="/register" style="color: #10b981;">Register</a> | 
+        <a href="/status" style="color: #10b981;">Status</a></p>
+        </body></html>
+        """
+
+@app.route('/init-db')
+def initialize_database():
+    success = init_database()
+    if success:
+        return """
+        <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
+        <h1>✅ Database Initialized!</h1>
+        <p>ShadowStrike Options database is ready!</p>
+        <p><strong>Test Accounts Created:</strong></p>
+        <p>Username: admin | Password: admin123</p>
+        <p>Username: demo | Password: demo123</p>
+        <br>
+        <a href="/login" style="background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Go to Login</a>
+        </body></html>
+        """
+    else:
+        return """
+        <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
+        <h1>❌ Database Initialization Failed</h1>
+        <p>Check the logs for more details</p>
+        <a href="/">Back to Home</a>
+        </body></html>
         """
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        user = User.query.filter_by(username=username).first()
-        
-        if user and check_password_hash(user.password_hash, password):
-            session['user_id'] = user.id
-            session['username'] = user.username
-            flash('Login successful!', 'success')
-            return redirect(url_for('dashboard'))
-        else:
-            flash('Invalid username or password', 'error')
+        try:
+            username = request.form.get('username')
+            password = request.form.get('password')
+            
+            user = User.query.filter_by(username=username).first()
+            
+            if user and check_password_hash(user.password_hash, password):
+                session['user_id'] = user.id
+                session['username'] = user.username
+                flash('Login successful!', 'success')
+                return redirect(url_for('dashboard'))
+            else:
+                flash('Invalid username or password', 'error')
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            flash('Login system error. Try initializing database first.', 'error')
     
     try:
         return render_template('login.html')
     except Exception as e:
         logger.error(f"Error rendering login.html: {e}")
         return f"""
-        <h1>🎯 ShadowStrike Options - Login</h1>
-        <p>Template error: {e}</p>
+        <!DOCTYPE html>
+        <html><head><title>Login - ShadowStrike Options</title></head>
+        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+        <div style="max-width: 400px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px;">
+        <h1 style="color: #10b981; text-align: center;">🎯 ShadowStrike Options</h1>
+        <h2 style="text-align: center;">Login</h2>
         <form method="POST">
-            <input name="username" placeholder="Username" required><br><br>
-            <input name="password" type="password" placeholder="Password" required><br><br>
-            <button type="submit">Login</button>
+            <div style="margin-bottom: 15px;">
+                <label>Username:</label><br>
+                <input name="username" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label>Password:</label><br>
+                <input name="password" type="password" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
+            </div>
+            <button type="submit" style="width: 100%; padding: 12px; background: #10b981; color: white; border: none; border-radius: 5px; font-weight: bold;">Login</button>
         </form>
-        <a href="/">Home</a> | <a href="/register">Register</a>
+        <p style="text-align: center; margin-top: 20px;">
+            <a href="/" style="color: #10b981;">Home</a> | 
+            <a href="/register" style="color: #10b981;">Register</a> |
+            <a href="/init-db" style="color: #10b981;">Initialize Database</a>
+        </p>
+        </div></body></html>
         """
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form.get('username')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        terms = request.form.get('terms_accepted')
-        
-        # Validation
-        if not all([username, email, password]):
-            flash('All fields are required', 'error')
-            return redirect(url_for('register'))
-        
-        if not terms:
-            flash('You must accept the terms and conditions', 'error')
-            return redirect(url_for('register'))
-        
-        # Check if user exists
-        if User.query.filter_by(username=username).first():
-            flash('Username already exists', 'error')
-            return redirect(url_for('register'))
-        
-        if User.query.filter_by(email=email).first():
-            flash('Email already registered', 'error')
-            return redirect(url_for('register'))
-        
-        # Create new user
         try:
+            username = request.form.get('username')
+            email = request.form.get('email')
+            password = request.form.get('password')
+            terms = request.form.get('terms_accepted')
+            
+            # Validation
+            if not all([username, email, password]):
+                flash('All fields are required', 'error')
+                return redirect(url_for('register'))
+            
+            if not terms:
+                flash('You must accept the terms and conditions', 'error')
+                return redirect(url_for('register'))
+            
+            # Check if user exists
+            if User.query.filter_by(username=username).first():
+                flash('Username already exists', 'error')
+                return redirect(url_for('register'))
+            
+            if User.query.filter_by(email=email).first():
+                flash('Email already registered', 'error')
+                return redirect(url_for('register'))
+            
+            # Create new user
             user = User(
                 username=username,
                 email=email,
@@ -133,23 +214,43 @@ def register():
             
         except Exception as e:
             logger.error(f"Registration error: {e}")
-            flash('Registration failed. Please try again.', 'error')
+            flash('Registration failed. Try initializing database first.', 'error')
     
     try:
         return render_template('register.html')
     except Exception as e:
         logger.error(f"Error rendering register.html: {e}")
         return f"""
-        <h1>🎯 ShadowStrike Options - Register</h1>
-        <p>Template error: {e}</p>
+        <!DOCTYPE html>
+        <html><head><title>Register - ShadowStrike Options</title></head>
+        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+        <div style="max-width: 400px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px;">
+        <h1 style="color: #10b981; text-align: center;">🎯 ShadowStrike Options</h1>
+        <h2 style="text-align: center;">Register</h2>
         <form method="POST">
-            <input name="username" placeholder="Username" required><br><br>
-            <input name="email" type="email" placeholder="Email" required><br><br>
-            <input name="password" type="password" placeholder="Password" required><br><br>
-            <input name="terms_accepted" type="checkbox" required> I accept terms<br><br>
-            <button type="submit">Register</button>
+            <div style="margin-bottom: 15px;">
+                <label>Username:</label><br>
+                <input name="username" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label>Email:</label><br>
+                <input name="email" type="email" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <label>Password:</label><br>
+                <input name="password" type="password" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
+            </div>
+            <div style="margin-bottom: 15px;">
+                <input name="terms_accepted" type="checkbox" required> I accept the terms and disclaimer
+            </div>
+            <button type="submit" style="width: 100%; padding: 12px; background: #10b981; color: white; border: none; border-radius: 5px; font-weight: bold;">Register</button>
         </form>
-        <a href="/">Home</a> | <a href="/login">Login</a>
+        <p style="text-align: center; margin-top: 20px;">
+            <a href="/" style="color: #10b981;">Home</a> | 
+            <a href="/login" style="color: #10b981;">Login</a> |
+            <a href="/init-db" style="color: #10b981;">Initialize Database</a>
+        </p>
+        </div></body></html>
         """
 
 @app.route('/dashboard')
@@ -158,42 +259,49 @@ def dashboard():
         flash('Please login to access the dashboard', 'error')
         return redirect(url_for('login'))
     
-    user = User.query.get(session['user_id'])
-    if not user:
-        session.clear()
-        flash('User not found. Please login again.', 'error')
-        return redirect(url_for('login'))
-    
-    # Get user's trades
-    trades = Trade.query.filter_by(user_id=user.id).all()
-    
-    # Calculate portfolio stats
-    total_pnl = 0
-    open_trades = 0
-    for trade in trades:
-        if trade.status == 'open':
-            open_trades += 1
-            # Simple P&L calculation (in real app, you'd get current prices)
-            current_price = trade.entry_price * 1.1  # Mock 10% gain
-            pnl = (current_price - trade.entry_price) * trade.quantity * 100
-            total_pnl += pnl
-    
     try:
-        return render_template('dashboard.html', 
-                             user=user, 
-                             trades=trades, 
-                             total_pnl=total_pnl,
-                             open_trades=open_trades)
+        user = User.query.get(session['user_id'])
+        if not user:
+            session.clear()
+            flash('User not found. Please login again.', 'error')
+            return redirect(url_for('login'))
+        
+        # Get user's trades
+        trades = Trade.query.filter_by(user_id=user.id).all()
+        
+        # Calculate portfolio stats
+        total_pnl = 0
+        open_trades = 0
+        for trade in trades:
+            if trade.status == 'open':
+                open_trades += 1
+                # Simple P&L calculation (in real app, you'd get current prices)
+                current_price = trade.entry_price * 1.1  # Mock 10% gain
+                pnl = (current_price - trade.entry_price) * trade.quantity * 100
+                total_pnl += pnl
+        
+        try:
+            return render_template('dashboard.html', 
+                                 user=user, 
+                                 trades=trades, 
+                                 total_pnl=total_pnl,
+                                 open_trades=open_trades)
+        except Exception as e:
+            logger.error(f"Error rendering dashboard.html: {e}")
+            return f"""
+            <!DOCTYPE html>
+            <html><head><title>Dashboard - ShadowStrike Options</title></head>
+            <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+            <h1 style="color: #10b981;">🎯 ShadowStrike Options - Dashboard</h1>
+            <p>Welcome {user.username}! ({user.subscription_status})</p>
+            <p>Portfolio P&L: ${total_pnl:.2f}</p>
+            <p>Open Trades: {open_trades}</p>
+            <p><a href="/logout" style="color: #ef4444;">Logout</a></p>
+            </body></html>
+            """
     except Exception as e:
-        logger.error(f"Error rendering dashboard.html: {e}")
-        return f"""
-        <h1>🎯 ShadowStrike Options - Dashboard</h1>
-        <p>Welcome {user.username}!</p>
-        <p>Template error: {e}</p>
-        <p>Portfolio P&L: ${total_pnl:.2f}</p>
-        <p>Open Trades: {open_trades}</p>
-        <a href="/logout">Logout</a>
-        """
+        logger.error(f"Dashboard error: {e}")
+        return redirect(url_for('login'))
 
 @app.route('/logout')
 def logout():
@@ -203,8 +311,15 @@ def logout():
 
 @app.route('/status')
 def status():
-    total_users = User.query.count()
-    total_trades = Trade.query.count()
+    try:
+        total_users = User.query.count()
+        total_trades = Trade.query.count()
+        db_status = "Connected"
+    except Exception as e:
+        logger.error(f"Database error in status: {e}")
+        total_users = 0
+        total_trades = 0
+        db_status = "Not Connected"
     
     try:
         return render_template('status.html', 
@@ -213,42 +328,19 @@ def status():
     except Exception as e:
         logger.error(f"Error rendering status.html: {e}")
         return f"""
-        <h1>🎯 ShadowStrike Options - Status</h1>
+        <!DOCTYPE html>
+        <html><head><title>Status - ShadowStrike Options</title></head>
+        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
+        <h1 style="color: #10b981;">🎯 ShadowStrike Options - Status</h1>
         <p>Platform Status: ✅ LIVE</p>
+        <p>Database Status: {db_status}</p>
         <p>Total Users: {total_users}</p>
         <p>Total Trades: {total_trades}</p>
-        <p>Template error: {e}</p>
-        <a href="/">Home</a>
+        <br>
+        <a href="/" style="color: #10b981;">Home</a> | 
+        <a href="/init-db" style="color: #10b981;">Initialize Database</a>
+        </body></html>
         """
-
-# API Routes
-@app.route('/api/portfolio')
-def api_portfolio():
-    if 'user_id' not in session:
-        return jsonify({'error': 'Not authenticated'}), 401
-    
-    trades = Trade.query.filter_by(user_id=session['user_id']).all()
-    portfolio_data = []
-    
-    for trade in trades:
-        # Mock current price calculation
-        current_price = trade.entry_price * (1 + (hash(trade.symbol) % 20 - 10) / 100)
-        pnl = (current_price - trade.entry_price) * trade.quantity * 100
-        
-        portfolio_data.append({
-            'id': trade.id,
-            'symbol': trade.symbol,
-            'option_type': trade.option_type,
-            'strike_price': trade.strike_price,
-            'entry_price': trade.entry_price,
-            'current_price': round(current_price, 2),
-            'quantity': trade.quantity,
-            'pnl': round(pnl, 2),
-            'status': trade.status,
-            'entry_date': trade.entry_date.strftime('%Y-%m-%d')
-        })
-    
-    return jsonify(portfolio_data)
 
 # Debug route to check templates
 @app.route('/debug')
@@ -257,30 +349,10 @@ def debug():
     template_dir = app.template_folder
     if os.path.exists(template_dir):
         files = os.listdir(template_dir)
-        return f"Template directory exists: {template_dir}<br>Files: {files}"
+        return f"Template directory exists: {template_dir}<br>Files: {files}<br><a href='/'>Home</a>"
     else:
-        return f"Template directory NOT found: {template_dir}"
-
-# Initialize database
-def create_tables():
-    with app.app_context():
-        try:
-            db.create_all()
-            
-            # Create demo admin user if doesn't exist
-            if not User.query.filter_by(username='admin').first():
-                admin = User(
-                    username='admin',
-                    email='admin@shadowstrike.com',
-                    password_hash=generate_password_hash('admin123')
-                )
-                db.session.add(admin)
-                db.session.commit()
-                logger.info("Created admin user: admin/admin123")
-        except Exception as e:
-            logger.error(f"Database initialization error: {e}")
+        return f"Template directory NOT found: {template_dir}<br><a href='/'>Home</a>"
 
 if __name__ == '__main__':
-    create_tables()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
