@@ -23,7 +23,7 @@
             backdrop-filter: blur(15px);
         }
         .navbar-content {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             display: flex;
             justify-content: space-between;
@@ -55,7 +55,7 @@
             transform: translateY(-1px);
         }
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -63,60 +63,157 @@
             background: rgba(6, 95, 70, 0.3);
             border: 2px solid rgba(16, 185, 129, 0.5);
             border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
+            padding: 20px;
+            margin-bottom: 20px;
             text-align: center;
         }
         .welcome-section h2 {
             color: #10b981;
-            font-size: 2em;
-            margin-bottom: 15px;
+            font-size: 1.8em;
+            margin-bottom: 10px;
         }
+        .market-status {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .market-open { background: #10b981; color: white; }
+        .market-closed { background: #ef4444; color: white; }
+        
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
         }
         .stat-card {
             background: rgba(6, 95, 70, 0.3);
             border: 2px solid rgba(16, 185, 129, 0.5);
             border-radius: 15px;
-            padding: 25px;
+            padding: 20px;
             text-align: center;
         }
         .stat-card h3 {
             color: #a7f3d0;
-            font-size: 1em;
-            margin-bottom: 10px;
+            font-size: 0.9em;
+            margin-bottom: 8px;
         }
         .stat-value {
-            font-size: 2em;
+            font-size: 1.8em;
             font-weight: bold;
             color: #10b981;
         }
         .positive { color: #10b981; }
         .negative { color: #ef4444; }
-        .trades-section {
+        
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+        
+        .section {
             background: rgba(6, 95, 70, 0.3);
             border: 2px solid rgba(16, 185, 129, 0.5);
             border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
+            padding: 25px;
         }
-        .trades-section h3 {
+        .section h3 {
             color: #10b981;
-            font-size: 1.5em;
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .scanner-filters {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
             margin-bottom: 20px;
         }
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+        }
+        .filter-group label {
+            color: #a7f3d0;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .filter-group input, .filter-group select {
+            padding: 8px;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 6px;
+            background: rgba(16, 185, 129, 0.1);
+            color: white;
+            font-size: 0.9em;
+        }
+        
+        .btn {
+            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 0.85em;
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #dc2626 0%, #ef4444 100%);
+        }
+        
+        .trade-form {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+            margin-bottom: 15px;
+        }
+        
+        .results-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        .results-table th {
+            background: rgba(16, 185, 129, 0.3);
+            padding: 10px 8px;
+            text-align: left;
+            color: #a7f3d0;
+            font-size: 0.85em;
+            border-bottom: 2px solid rgba(16, 185, 129, 0.5);
+        }
+        .results-table td {
+            padding: 8px;
+            border-bottom: 1px solid rgba(16, 185, 129, 0.2);
+            font-size: 0.9em;
+        }
+        .results-table tr:hover {
+            background: rgba(16, 185, 129, 0.1);
+        }
+        
         .trade-item {
             background: rgba(16, 185, 129, 0.1);
             border: 1px solid rgba(16, 185, 129, 0.3);
             border-radius: 10px;
             padding: 15px;
-            margin-bottom: 15px;
-            display: flex;
-            justify-content: space-between;
+            margin-bottom: 12px;
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 15px;
             align-items: center;
         }
         .trade-info {
@@ -126,68 +223,78 @@
             font-weight: bold;
             color: #10b981;
             font-size: 1.1em;
+            margin-bottom: 5px;
         }
         .trade-details {
             color: #a7f3d0;
-            font-size: 0.9em;
-            margin-top: 5px;
+            font-size: 0.85em;
+            line-height: 1.4;
         }
         .trade-pnl {
             font-weight: bold;
             font-size: 1.1em;
+            text-align: right;
         }
+        
+        .movers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+        }
+        .mover-card {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+        .mover-symbol {
+            font-weight: bold;
+            color: #10b981;
+            font-size: 1.1em;
+        }
+        .mover-price {
+            color: white;
+            margin: 5px 0;
+        }
+        .mover-change {
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        
         .no-trades {
             text-align: center;
             color: #a7f3d0;
             font-style: italic;
-            padding: 40px;
+            padding: 30px;
         }
-        .add-trade-btn {
-            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
-            color: white;
-            padding: 12px 24px;
-            border: none;
+        
+        .alert {
+            padding: 12px;
             border-radius: 8px;
-            font-weight: bold;
-            cursor: pointer;
-            transition: transform 0.3s ease;
-            margin-top: 20px;
-        }
-        .add-trade-btn:hover {
-            transform: translateY(-2px);
-        }
-        .features-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-        }
-        .feature-card {
-            background: rgba(6, 95, 70, 0.3);
-            border: 2px solid rgba(16, 185, 129, 0.5);
-            border-radius: 15px;
-            padding: 25px;
-        }
-        .feature-card h4 {
-            color: #10b981;
-            font-size: 1.2em;
             margin-bottom: 15px;
+            font-size: 0.9em;
         }
-        .feature-card p {
-            color: #a7f3d0;
-            line-height: 1.5;
+        .alert-info {
+            background: rgba(59, 130, 246, 0.2);
+            border: 1px solid #3b82f6;
+            color: #93c5fd;
         }
+        
         @media (max-width: 768px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
             .navbar-content {
                 flex-direction: column;
                 gap: 10px;
             }
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
             .trade-item {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 10px;
+                grid-template-columns: 1fr;
+                text-align: center;
             }
         }
     </style>
@@ -205,15 +312,18 @@
 
     <div class="container">
         <div class="welcome-section">
-            <h2>🎉 Welcome to Your Trading Dashboard!</h2>
-            <p>Your ShadowStrike Options platform is fully operational and ready for trading analysis.</p>
+            <h2>🎉 Trading Dashboard</h2>
+            <p>Real-time options analysis and portfolio management</p>
+            <span class="market-status {{ 'market-open' if market_status.is_open else 'market-closed' }}">
+                {{ market_status.status }}
+            </span>
         </div>
 
         <div class="stats-grid">
             <div class="stat-card">
                 <h3>Portfolio P&L</h3>
                 <div class="stat-value {{ 'positive' if total_pnl >= 0 else 'negative' }}">
-                    ${{ "%.2f"|format(total_pnl) }}
+                    ${{ "{:,.2f}".format(total_pnl) }}
                 </div>
             </div>
             <div class="stat-card">
@@ -224,52 +334,281 @@
                 <h3>Account Status</h3>
                 <div class="stat-value">{{ user.subscription_status|title }}</div>
             </div>
+            <div class="stat-card">
+                <h3>Market Status</h3>
+                <div class="stat-value">{{ market_status.status }}</div>
+            </div>
         </div>
 
-        <div class="trades-section">
-            <h3>📊 Your Active Trades</h3>
-            
-            {% if trades %}
-                {% for trade in trades %}
-                <div class="trade-item">
-                    <div class="trade-info">
-                        <div class="trade-symbol">{{ trade.symbol }} {{ trade.option_type }}</div>
-                        <div class="trade-details">
-                            Strike: ${{ trade.strike_price }} | Entry: ${{ trade.entry_price }} | 
-                            Qty: {{ trade.quantity }} | Date: {{ trade.entry_date.strftime('%Y-%m-%d') }}
+        <div class="main-grid">
+            <!-- Options Scanner -->
+            <div class="section">
+                <h3>🎯 Options Scanner</h3>
+                <div class="alert alert-info">
+                    <strong>Find High-Probability Trades:</strong> Set your criteria below to scan for profitable options opportunities.
+                </div>
+                
+                <div class="scanner-filters">
+                    <div class="filter-group">
+                        <label>Symbol</label>
+                        <input type="text" id="scan-symbol" placeholder="SPY, AAPL, etc." value="SPY">
+                    </div>
+                    <div class="filter-group">
+                        <label>Option Type</label>
+                        <select id="scan-type">
+                            <option value="CALL">CALL</option>
+                            <option value="PUT">PUT</option>
+                            <option value="BOTH">BOTH</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Min Probability</label>
+                        <input type="number" id="min-prob" value="60" min="0" max="100">
+                    </div>
+                    <div class="filter-group">
+                        <label>Days to Expiry</label>
+                        <input type="number" id="days-expiry" value="30" min="1" max="365">
+                    </div>
+                </div>
+                
+                <button class="btn" onclick="runOptionsScanner()">🔍 Scan for Trades</button>
+                
+                <div id="scanner-results">
+                    <table class="results-table" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>Symbol</th>
+                                <th>Type</th>
+                                <th>Strike</th>
+                                <th>Probability</th>
+                                <th>Est. Premium</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="scanner-table-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Add New Trade -->
+            <div class="section">
+                <h3>📊 Add New Trade</h3>
+                <form id="trade-form">
+                    <div class="trade-form">
+                        <div class="filter-group">
+                            <label>Symbol</label>
+                            <input type="text" id="trade-symbol" placeholder="AAPL" required>
+                        </div>
+                        <div class="filter-group">
+                            <label>Option Type</label>
+                            <select id="trade-type" required>
+                                <option value="CALL">CALL</option>
+                                <option value="PUT">PUT</option>
+                            </select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Strike Price</label>
+                            <input type="number" id="trade-strike" step="0.01" placeholder="150.00" required>
+                        </div>
+                        <div class="filter-group">
+                            <label>Entry Price</label>
+                            <input type="number" id="trade-entry" step="0.01" placeholder="2.50" required>
+                        </div>
+                        <div class="filter-group">
+                            <label>Quantity</label>
+                            <input type="number" id="trade-quantity" value="1" min="1" required>
+                        </div>
+                        <div class="filter-group">
+                            <label>&nbsp;</label>
+                            <button type="submit" class="btn">Add Trade</button>
                         </div>
                     </div>
-                    <div class="trade-pnl positive">+$120.00</div>
+                </form>
+                
+                <div class="alert alert-info">
+                    <strong>💡 Pro Tip:</strong> Use the scanner above to find high-probability trades, then add them to your portfolio here.
+                </div>
+            </div>
+        </div>
+
+        <!-- Your Portfolio -->
+        <div class="section">
+            <h3>📈 Your Active Trades</h3>
+            
+            {% if trades %}
+                {% for trade_data in trades %}
+                <div class="trade-item">
+                    <div class="trade-info">
+                        <div class="trade-symbol">{{ trade_data.trade.symbol }} {{ trade_data.trade.option_type }}</div>
+                        <div class="trade-details">
+                            Strike: ${{ trade_data.trade.strike_price }} | Entry: ${{ trade_data.trade.entry_price }} | Qty: {{ trade_data.trade.quantity }}<br>
+                            Current Stock: ${{ trade_data.current_stock_price }} | Option: ${{ trade_data.current_option_price }} | Probability: {{ trade_data.probability }}%<br>
+                            Entered: {{ trade_data.trade.entry_date.strftime('%Y-%m-%d') }}
+                        </div>
+                    </div>
+                    <div class="trade-pnl {{ 'positive' if trade_data.pnl >= 0 else 'negative' }}">
+                        {{ '+' if trade_data.pnl >= 0 else '' }}${{ "{:,.2f}".format(trade_data.pnl) }}
+                    </div>
+                    <div>
+                        <button class="btn btn-small btn-danger" onclick="closeTrade({{ trade_data.trade.id }})">Close</button>
+                    </div>
                 </div>
                 {% endfor %}
             {% else %}
                 <div class="no-trades">
-                    <p>No trades yet. Start by analyzing some options!</p>
-                    <button class="add-trade-btn" onclick="alert('Options analysis tools coming soon!')">
-                        🔍 Analyze Options
-                    </button>
+                    <p>No trades yet. Use the scanner above to find opportunities!</p>
                 </div>
             {% endif %}
         </div>
 
-        <div class="features-grid">
-            <div class="feature-card">
-                <h4>🎯 Real-Time Analysis</h4>
-                <p>Advanced Black-Scholes calculations and probability analysis for optimal trade selection.</p>
-            </div>
-            <div class="feature-card">
-                <h4>📈 Portfolio Tracking</h4>
-                <p>Comprehensive P&L tracking with real-time updates and performance analytics.</p>
-            </div>
-            <div class="feature-card">
-                <h4>🔔 Smart Alerts</h4>
-                <p>Automated notifications for trade opportunities, expiration warnings, and market events.</p>
-            </div>
-            <div class="feature-card">
-                <h4>📊 Risk Management</h4>
-                <p>Intelligent stop-loss recommendations and position sizing based on volatility analysis.</p>
+        <!-- Market Movers -->
+        <div class="section">
+            <h3>🔥 Top Market Movers</h3>
+            <div class="movers-grid">
+                {% for mover in top_movers %}
+                <div class="mover-card">
+                    <div class="mover-symbol">{{ mover.symbol }}</div>
+                    <div class="mover-price">${{ mover.price }}</div>
+                    <div class="mover-change {{ 'positive' if mover.change >= 0 else 'negative' }}">
+                        {{ '+' if mover.change >= 0 else '' }}{{ mover.change }} ({{ mover.change_percent }}%)
+                    </div>
+                </div>
+                {% endfor %}
             </div>
         </div>
     </div>
+
+    <script>
+        function runOptionsScanner() {
+            const symbol = document.getElementById('scan-symbol').value || 'SPY';
+            const type = document.getElementById('scan-type').value;
+            const minProb = document.getElementById('min-prob').value || 60;
+            const days = document.getElementById('days-expiry').value || 30;
+            
+            // Show loading
+            const resultsDiv = document.getElementById('scanner-results');
+            const table = resultsDiv.querySelector('table');
+            const tbody = document.getElementById('scanner-table-body');
+            
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #a7f3d0;">🔍 Scanning for trades...</td></tr>';
+            table.style.display = 'table';
+            
+            // Mock scanner results (in real app, this would call your API)
+            setTimeout(() => {
+                const mockResults = generateMockScanResults(symbol, type, minProb, days);
+                displayScanResults(mockResults);
+            }, 2000);
+        }
+        
+        function generateMockScanResults(symbol, type, minProb, days) {
+            const basePrice = 420; // Mock current price
+            const results = [];
+            
+            const strikes = [basePrice - 20, basePrice - 10, basePrice, basePrice + 10, basePrice + 20];
+            const types = type === 'BOTH' ? ['CALL', 'PUT'] : [type];
+            
+            types.forEach(optType => {
+                strikes.forEach(strike => {
+                    let probability;
+                    if (optType === 'CALL') {
+                        probability = basePrice > strike ? 
+                            Math.min(95, 60 + ((basePrice - strike) / basePrice) * 30) :
+                            Math.max(20, 60 - ((strike - basePrice) / basePrice) * 40);
+                    } else {
+                        probability = basePrice < strike ? 
+                            Math.min(95, 60 + ((strike - basePrice) / basePrice) * 30) :
+                            Math.max(20, 60 - ((basePrice - strike) / basePrice) * 40);
+                    }
+                    
+                    probability = Math.round(probability * 10) / 10;
+                    
+                    if (probability >= minProb) {
+                        const premium = Math.max(0.5, Math.random() * 10);
+                        results.push({
+                            symbol: symbol,
+                            type: optType,
+                            strike: strike,
+                            probability: probability,
+                            premium: premium.toFixed(2)
+                        });
+                    }
+                });
+            });
+            
+            return results.sort((a, b) => b.probability - a.probability).slice(0, 5);
+        }
+        
+        function displayScanResults(results) {
+            const tbody = document.getElementById('scanner-table-body');
+            
+            if (results.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #a7f3d0;">No trades found matching your criteria</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = results.map(result => `
+                <tr>
+                    <td style="font-weight: bold; color: #10b981;">${result.symbol}</td>
+                    <td><span style="background: ${result.type === 'CALL' ? '#10b981' : '#ef4444'}; padding: 2px 6px; border-radius: 4px; font-size: 0.8em;">${result.type}</span></td>
+                    <td>$${result.strike}</td>
+                    <td style="font-weight: bold; color: #10b981;">${result.probability}%</td>
+                    <td>$${result.premium}</td>
+                    <td><button class="btn btn-small" onclick="addTradeFromScanner('${result.symbol}', '${result.type}', ${result.strike}, ${result.premium})">Add</button></td>
+                </tr>
+            `).join('');
+        }
+        
+        function addTradeFromScanner(symbol, type, strike, premium) {
+            document.getElementById('trade-symbol').value = symbol;
+            document.getElementById('trade-type').value = type;
+            document.getElementById('trade-strike').value = strike;
+            document.getElementById('trade-entry').value = premium;
+            
+            // Scroll to trade form
+            document.getElementById('trade-form').scrollIntoView({ behavior: 'smooth' });
+            
+            // Highlight the form briefly
+            const form = document.getElementById('trade-form');
+            form.style.border = '2px solid #10b981';
+            setTimeout(() => form.style.border = 'none', 2000);
+        }
+        
+        document.getElementById('trade-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const symbol = document.getElementById('trade-symbol').value;
+            const type = document.getElementById('trade-type').value;
+            const strike = document.getElementById('trade-strike').value;
+            const entry = document.getElementById('trade-entry').value;
+            const quantity = document.getElementById('trade-quantity').value;
+            
+            if (!symbol || !strike || !entry || !quantity) {
+                alert('Please fill in all fields');
+                return;
+            }
+            
+            // In a real app, this would send data to your server
+            alert(`Trade added: ${quantity} ${symbol} ${type} $${strike} @ $${entry}\n\nNote: This is a demo. In the real platform, this would be saved to your portfolio.`);
+            
+            // Reset form
+            this.reset();
+        });
+        
+        function closeTrade(tradeId) {
+            if (confirm('Are you sure you want to close this trade?')) {
+                // In a real app, this would call your API to close the trade
+                alert(`Trade ${tradeId} closed!\n\nNote: This is a demo. In the real platform, this would update your portfolio.`);
+            }
+        }
+        
+        // Auto-refresh market data every 30 seconds
+        setInterval(() => {
+            if (document.hidden) return; // Don't refresh if tab is not visible
+            
+            // In a real app, this would fetch fresh market data
+            console.log('Refreshing market data...');
+        }, 30000);
+    </script>
 </body>
 </html>
