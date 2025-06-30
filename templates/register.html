@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Register - ShadowStrike Options</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: linear-gradient(135deg, #1f2937 0%, #065f46 100%);
+            color: white;
+            font-family: 'Arial', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .register-container {
+            background: rgba(6, 95, 70, 0.3);
+            border: 2px solid rgba(16, 185, 129, 0.5);
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: 450px;
+            backdrop-filter: blur(15px);
+            box-shadow: 0 8px 32px rgba(16, 185, 129, 0.3);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .logo h1 {
+            font-size: 2em;
+            color: #10b981;
+            margin-bottom: 10px;
+        }
+        .logo p {
+            color: #a7f3d0;
+            font-size: 0.9em;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #a7f3d0;
+            font-weight: bold;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid rgba(16, 185, 129, 0.3);
+            border-radius: 10px;
+            background: rgba(6, 95, 70, 0.5);
+            color: white;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #10b981;
+        }
+        .form-group input::placeholder {
+            color: #6b7280;
+        }
+        .disclaimer {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            font-size: 12px;
+            color: #a7f3d0;
+            line-height: 1.4;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 20px;
+        }
+        .checkbox-group input {
+            margin-right: 10px;
+            margin-top: 3px;
+        }
+        .checkbox-group label {
+            font-size: 14px;
+            color: #a7f3d0;
+            line-height: 1.4;
+        }
+        .btn {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+            margin-bottom: 20px;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .alert {
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .alert-error {
+            background: rgba(239, 68, 68, 0.2);
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+        }
+        .alert-success {
+            background: rgba(16, 185, 129, 0.2);
+            border: 1px solid #10b981;
+            color: #6ee7b7;
+        }
+        .links {
+            text-align: center;
+        }
+        .links a {
+            color: #10b981;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+        .links a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="register-container">
+        <div class="logo">
+            <h1>🎯 ShadowStrike Options</h1>
+            <p>Join Elite Trading Platform</p>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'error' if category == 'error' else 'success' }}">
+                        {{ message }}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <form method="POST">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" placeholder="Choose a username" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" name="email" placeholder="Enter your email" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" placeholder="Create a secure password" required>
+            </div>
+            
+            <div class="disclaimer">
+                <strong>⚠️ LEGAL DISCLAIMER:</strong> This platform is for educational and informational purposes only. 
+                This is not financial advice. Options trading involves substantial risk of loss. 
+                Always consult with licensed financial advisors before making trading decisions. 
+                The platform creators assume no responsibility for financial losses.
+            </div>
+            
+            <div class="checkbox-group">
+                <input type="checkbox" id="terms" name="terms_accepted" required>
+                <label for="terms">
+                    I have read and agree to the terms and legal disclaimer above, 
+                    and I understand the risks involved in options trading.
+                </label>
+            </div>
+            
+            <button type="submit" class="btn">🆓 Start 30-Day Free Trial</button>
+        </form>
+        
+        <div class="links">
+            <a href="/">← Back to Home</a> | 
+            <a href="/login">Already have an account?</a>
+        </div>
+    </div>
+</body>
+</html>
