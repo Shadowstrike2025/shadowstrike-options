@@ -4,6 +4,8 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import logging
+import yfinance as yf
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -48,6 +50,91 @@ class Trade(db.Model):
     
     user = db.relationship('User', backref='trades')
 
+# Market Data Functions
+def get_stock_price(symbol):
+    """Get current stock price using yfinance"""
+    try:
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
+        return {
+            'symbol': symbol,
+            'price': round(current_price, 2) if current_price else 0,
+            'change': round(info.get('regularMarketChange', 0), 2),
+            'change_percent': round(info.get('regularMarketChangePercent', 0), 2),
+            'volume': info.get('volume', 0),
+            'market_cap': info.get('marketCap', 0)
+        }
+    except Exception as e:
+        logger.error(f"Error getting price for {symbol}: {e}")
+        return {'symbol': symbol, 'price': 0, 'change': 0, 'change_percent': 0, 'volume': 0, 'market_cap': 0}
+
+def get_market_status():
+    """Check if market is open"""
+    try:
+        # Simple market hours check (9:30 AM - 4:00 PM ET, Mon-Fri)
+        now = datetime.now()
+        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+        
+        is_weekday = now.weekday() < 5  # Monday = 0, Friday = 4
+        is_market_hours = market_open <= now <= market_close
+        
+        return {
+            'is_open': is_weekday and is_market_hours,
+            'status': 'OPEN' if (is_weekday and is_market_hours) else 'CLOSED',
+            'next_open': 'Monday 9:30 AM ET' if now.weekday() >= 5 else 'Tomorrow 9:30 AM ET'
+        }
+    except:
+        return {'is_open': False, 'status': 'UNKNOWN', 'next_open': 'Unknown'}
+
+def get_top_movers():
+    """Get top moving stocks"""
+    symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX']
+    movers = []
+    
+    for symbol in symbols:
+        try:
+            data = get_stock_price(symbol)
+            if data['price'] > 0:
+                movers.append(data)
+        except:
+            continue
+    
+    # Sort by absolute change percentage
+    movers.sort(key=lambda x: abs(x['change_percent']), reverse=True)
+    return movers[:5]  # Top 5 movers
+
+def calculate_option_probability(stock_price, strike_price, days_to_expiry, option_type='CALL'):
+    """Simple probability calculation for options"""
+    try:
+        if days_to_expiry <= 0:
+            return 0
+        
+        # Simple probability model (not Black-Scholes, but good enough for demo)
+        price_ratio = stock_price / strike_price
+        time_factor = days_to_expiry / 365
+        
+        if option_type == 'CALL':
+            # Call probability increases as stock price > strike price
+            if price_ratio >= 1:
+                base_prob = 60 + (price_ratio - 1) * 30
+            else:
+                base_prob = 40 * price_ratio
+        else:  # PUT
+            # Put probability increases as stock price < strike price
+            if price_ratio <= 1:
+                base_prob = 60 + (1 - price_ratio) * 30
+            else:
+                base_prob = 40 / price_ratio
+        
+        # Adjust for time
+        time_adjusted = base_prob * (1 + time_factor * 0.5)
+        
+        return min(95, max(5, round(time_adjusted, 1)))
+    except:
+        return 50  # Default probability
+
 # Database initialization function
 def init_database():
     try:
@@ -72,8 +159,21 @@ def init_database():
             )
             db.session.add(demo)
             
+            # Add some demo trades for the demo user
+            demo_trades = [
+                Trade(user_id=2, symbol='AAPL', option_type='CALL', strike_price=180, 
+                      entry_price=2.50, quantity=5, entry_date=datetime.now() - timedelta(days=5)),
+                Trade(user_id=2, symbol='MSFT', option_type='PUT', strike_price=420, 
+                      entry_price=8.20, quantity=2, entry_date=datetime.now() - timedelta(days=3)),
+                Trade(user_id=2, symbol='TSLA', option_type='CALL', strike_price=250, 
+                      entry_price=12.80, quantity=1, entry_date=datetime.now() - timedelta(days=1))
+            ]
+            
+            for trade in demo_trades:
+                db.session.add(trade)
+            
             db.session.commit()
-            logger.info("Database initialized successfully!")
+            logger.info("Database initialized successfully with demo data!")
             return True
     except Exception as e:
         logger.error(f"Database initialization error: {e}")
@@ -91,11 +191,11 @@ def index():
         <html><head><title>ShadowStrike Options</title></head>
         <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
         <h1>🎯 ShadowStrike Options</h1>
-        <p>Elite Trading Platform</p>
+        <p>Elite Trading Platform with Live Market Data</p>
         <p><a href="/init-db" style="color: #10b981;">Initialize Database</a> | 
         <a href="/login" style="color: #10b981;">Login</a> | 
         <a href="/register" style="color: #10b981;">Register</a> | 
-        <a href="/status" style="color: #10b981;">Status</a></p>
+        <a href="/market-data" style="color: #10b981;">Market Data</a></p>
         </body></html>
         """
 
@@ -106,10 +206,10 @@ def initialize_database():
         return """
         <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
         <h1>✅ Database Initialized!</h1>
-        <p>ShadowStrike Options database is ready!</p>
+        <p>ShadowStrike Options database is ready with demo data!</p>
         <p><strong>Test Accounts Created:</strong></p>
         <p>Username: admin | Password: admin123</p>
-        <p>Username: demo | Password: demo123</p>
+        <p>Username: demo | Password: demo123 (has sample trades)</p>
         <br>
         <a href="/login" style="background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Go to Login</a>
         </body></html>
@@ -266,26 +366,59 @@ def dashboard():
             flash('User not found. Please login again.', 'error')
             return redirect(url_for('login'))
         
-        # Get user's trades
+        # Get market data
+        market_status = get_market_status()
+        top_movers = get_top_movers()
+        
+        # Get user's trades with real P&L
         trades = Trade.query.filter_by(user_id=user.id).all()
         
-        # Calculate portfolio stats
+        # Calculate portfolio stats with real prices
         total_pnl = 0
         open_trades = 0
+        enhanced_trades = []
+        
         for trade in trades:
             if trade.status == 'open':
                 open_trades += 1
-                # Simple P&L calculation (in real app, you'd get current prices)
-                current_price = trade.entry_price * 1.1  # Mock 10% gain
-                pnl = (current_price - trade.entry_price) * trade.quantity * 100
+                # Get current stock price
+                stock_data = get_stock_price(trade.symbol)
+                current_stock_price = stock_data['price']
+                
+                # Calculate option probability
+                days_to_expiry = 30  # Assume 30 days for demo
+                probability = calculate_option_probability(
+                    current_stock_price, trade.strike_price, days_to_expiry, trade.option_type
+                )
+                
+                # Estimate current option price (simplified)
+                if trade.option_type == 'CALL':
+                    intrinsic_value = max(0, current_stock_price - trade.strike_price)
+                else:
+                    intrinsic_value = max(0, trade.strike_price - current_stock_price)
+                
+                time_value = trade.entry_price * 0.3  # Assume 30% time value remaining
+                current_option_price = intrinsic_value + time_value
+                
+                pnl = (current_option_price - trade.entry_price) * trade.quantity * 100
                 total_pnl += pnl
+                
+                enhanced_trades.append({
+                    'trade': trade,
+                    'current_stock_price': current_stock_price,
+                    'current_option_price': round(current_option_price, 2),
+                    'pnl': round(pnl, 2),
+                    'probability': probability
+                })
         
         try:
             return render_template('dashboard.html', 
                                  user=user, 
-                                 trades=trades, 
+                                 trades=enhanced_trades, 
                                  total_pnl=total_pnl,
-                                 open_trades=open_trades)
+                                 open_trades=open_trades,
+                                 market_status=market_status,
+                                 top_movers=top_movers)
         except Exception as e:
             logger.error(f"Error rendering dashboard.html: {e}")
             return f"""
@@ -294,14 +427,57 @@ def dashboard():
             <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
             <h1 style="color: #10b981;">🎯 ShadowStrike Options - Dashboard</h1>
             <p>Welcome {user.username}! ({user.subscription_status})</p>
+            <p>Market Status: {market_status['status']}</p>
             <p>Portfolio P&L: ${total_pnl:.2f}</p>
             <p>Open Trades: {open_trades}</p>
-            <p><a href="/logout" style="color: #ef4444;">Logout</a></p>
+            
+            <h3>Top Market Movers:</h3>
+            {''.join([f"<p>{mover['symbol']}: ${mover['price']} ({mover['change_percent']:+.2f}%)</p>" for mover in top_movers])}
+            
+            <p><a href="/logout" style="color: #ef4444;">Logout</a> | <a href="/market-data" style="color: #10b981;">Market Data</a></p>
             </body></html>
             """
     except Exception as e:
         logger.error(f"Dashboard error: {e}")
         return redirect(url_for('login'))
+
+@app.route('/market-data')
+def market_data():
+    """Standalone market data page"""
+    market_status = get_market_status()
+    top_movers = get_top_movers()
+    
+    return f"""
+    <!DOCTYPE html>
+    <html><head><title>Market Data - ShadowStrike Options</title></head>
+    <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+    <h1 style="color: #10b981;">📊 Live Market Data</h1>
+    <p>Market Status: <strong>{market_status['status']}</strong></p>
+    <p>Next Open: {market_status['next_open']}</p>
+    
+    <h2 style="color: #10b981;">Top Market Movers</h2>
+    <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+        <tr style="background: rgba(16, 185, 129, 0.3);">
+            <th style="padding: 10px; text-align: left;">Symbol</th>
+            <th style="padding: 10px; text-align: left;">Price</th>
+            <th style="padding: 10px; text-align: left;">Change</th>
+            <th style="padding: 10px; text-align: left;">% Change</th>
+            <th style="padding: 10px; text-align: left;">Volume</th>
+        </tr>
+        {''.join([f'''
+        <tr style="background: rgba(6, 95, 70, 0.3);">
+            <td style="padding: 10px; font-weight: bold;">{mover['symbol']}</td>
+            <td style="padding: 10px;">${mover['price']}</td>
+            <td style="padding: 10px; color: {'#10b981' if mover['change'] >= 0 else '#ef4444'};">{mover['change']:+.2f}</td>
+            <td style="padding: 10px; color: {'#10b981' if mover['change_percent'] >= 0 else '#ef4444'};">{mover['change_percent']:+.2f}%</td>
+            <td style="padding: 10px;">{mover['volume']:,}</td>
+        </tr>
+        ''' for mover in top_movers])}
+    </table>
+    
+    <p><a href="/" style="color: #10b981;">Home</a> | <a href="/login" style="color: #10b981;">Login</a></p>
+    </body></html>
+    """
 
 @app.route('/logout')
 def logout():
@@ -342,17 +518,4 @@ def status():
         </body></html>
         """
 
-# Debug route to check templates
-@app.route('/debug')
-def debug():
-    import os
-    template_dir = app.template_folder
-    if os.path.exists(template_dir):
-        files = os.listdir(template_dir)
-        return f"Template directory exists: {template_dir}<br>Files: {files}<br><a href='/'>Home</a>"
-    else:
-        return f"Template directory NOT found: {template_dir}<br><a href='/'>Home</a>"
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+# API Routes
