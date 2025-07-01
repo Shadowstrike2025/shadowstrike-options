@@ -1,540 +1,401 @@
+# Payment Routes (Add these just before if __name__ == '__main__':)
 
-import os
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
-from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, timedelta
-import logging
-import yfinance as yf
-import requests
-from flask_mail import Mail, Message
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import threading
-import stripe
-import paypalrestsdk
-import json
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Initialize Flask
-app = Flask(__name__)
-
-# Configuration
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'shadowstrike-secret-2025')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///shadowstrike.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-# Email Configuration
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = os.environ.get('EMAIL_USERNAME', 'your-email@gmail.com')
-app.config['MAIL_PASSWORD'] = os.environ.get('EMAIL_PASSWORD', 'your-app-password')
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('EMAIL_USERNAME', 'your-email@gmail.com')
-
-# Payment Configuration
-stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', 'sk_test_your_stripe_secret_key')
-app.config['STRIPE_PUBLIC_KEY'] = os.environ.get('STRIPE_PUBLIC_KEY', 'pk_test_your_stripe_public_key')
-
-# PayPal Configuration
-paypalrestsdk.configure({
-    "mode": "sandbox",  # sandbox or live
-    "client_id": os.environ.get('PAYPAL_CLIENT_ID', 'your_paypal_client_id'),
-    "client_secret": os.environ.get('PAYPAL_CLIENT_SECRET', 'your_paypal_client_secret')
-})
-
-# Fix for Heroku/Render Postgres URL
-if app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
-    app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://', 'postgresql://')
-
-# Initialize extensions
-db = SQLAlchemy(app)
-mail = Mail(app)
-
-# User Model (Enhanced with payment fields)
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+@app.route('/subscribe')
+def subscribe():
+    """Subscription page with Stripe and PayPal options"""
+    if 'user_id' not in session:
+        flash('Please login to subscribe', 'error')
+        return redirect(url_for('login'))
     
-    # Subscription fields
-    subscription_status = db.Column(db.String(20), default='trial')  # trial, active, expired, cancelled
-    trial_end_date = db.Column(db.DateTime, default=lambda: datetime.utcnow() + timedelta(days=30))
-    subscription_start_date = db.Column(db.DateTime, nullable=True)
-    subscription_end_date = db.Column(db.DateTime, nullable=True)
+    user = User.query.get(session['user_id'])
+    if not user:
+        return redirect(url_for('login'))
     
-    # Payment fields
-    stripe_customer_id = db.Column(db.String(100), nullable=True)
-    stripe_subscription_id = db.Column(db.String(100), nullable=True)
-    paypal_subscription_id = db.Column(db.String(100), nullable=True)
-    payment_method = db.Column(db.String(20), nullable=True)  # stripe, paypal
-    last_payment_date = db.Column(db.DateTime, nullable=True)
+    # If already subscribed, redirect to dashboard
+    if user.subscription_status == 'active':
+        flash('You already have an active subscription!', 'info')
+        return redirect(url_for('dashboard'))
     
-    # Email Alert Preferences
-    email_alerts_enabled = db.Column(db.Boolean, default=True)
-    daily_picks_email = db.Column(db.Boolean, default=True)
-    portfolio_alerts = db.Column(db.Boolean, default=True)
-    market_alerts = db.Column(db.Boolean, default=True)
-    email_verified = db.Column(db.Boolean, default=False)
-    
-    def days_left_in_trial(self):
-        if self.subscription_status != 'trial':
-            return 0
-        delta = self.trial_end_date - datetime.utcnow()
-        return max(0, delta.days)
-    
-    def is_subscription_active(self):
-        if self.subscription_status == 'trial':
-            return datetime.utcnow() < self.trial_end_date
-        return self.subscription_status == 'active'
-
-# Trade Model (same as before)
-class Trade(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    symbol = db.Column(db.String(10), nullable=False)
-    option_type = db.Column(db.String(4), nullable=False)
-    strike_price = db.Column(db.Float, nullable=False)
-    entry_price = db.Column(db.Float, nullable=False)
-    quantity = db.Column(db.Integer, nullable=False)
-    entry_date = db.Column(db.DateTime, default=datetime.utcnow)
-    status = db.Column(db.String(10), default='open')
-    
-    user = db.relationship('User', backref='trades')
-
-# Payment Transaction Model
-class PaymentTransaction(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    transaction_id = db.Column(db.String(100), nullable=False)
-    payment_method = db.Column(db.String(20), nullable=False)  # stripe, paypal
-    amount = db.Column(db.Float, nullable=False)
-    currency = db.Column(db.String(3), default='USD')
-    status = db.Column(db.String(20), nullable=False)  # pending, completed, failed, refunded
-    transaction_date = db.Column(db.DateTime, default=datetime.utcnow)
-    description = db.Column(db.String(200), nullable=True)
-    
-    user = db.relationship('User', backref='payment_transactions')
-
-# Email Alert Model (same as before)
-class EmailAlert(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    alert_type = db.Column(db.String(50), nullable=False)
-    sent_at = db.Column(db.DateTime, default=datetime.utcnow)
-    subject = db.Column(db.String(200), nullable=False)
-    content = db.Column(db.Text, nullable=True)
-    
-    user = db.relationship('User', backref='email_alerts')
-
-# Payment Functions
-def create_stripe_customer(user):
-    """Create Stripe customer for user"""
     try:
-        customer = stripe.Customer.create(
-            email=user.email,
-            metadata={'user_id': user.id, 'username': user.username}
-        )
-        user.stripe_customer_id = customer.id
-        db.session.commit()
-        return customer
+        return render_template('subscribe.html', 
+                             user=user,
+                             stripe_public_key=app.config['STRIPE_PUBLIC_KEY'],
+                             days_left=user.days_left_in_trial())
     except Exception as e:
-        logger.error(f"Error creating Stripe customer: {e}")
-        return None
+        logger.error(f"Error rendering subscribe.html: {e}")
+        return f"""
+        <!DOCTYPE html>
+        <html><head><title>Subscribe - ShadowStrike Options</title></head>
+        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+        <div style="max-width: 600px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px;">
+            <h1 style="color: #10b981; text-align: center;">💳 Subscribe to ShadowStrike Options</h1>
+            <div style="text-align: center; margin: 30px 0;">
+                <h2 style="color: #ffffff;">Continue Your Trading Success</h2>
+                <p style="color: #a7f3d0;">Trial expires in {user.days_left_in_trial()} days</p>
+                <div style="font-size: 2em; color: #10b981; margin: 20px 0;">$49/month</div>
+                <p style="color: #a7f3d0;">Cancel anytime • No long-term contracts</p>
+            </div>
+            
+            <div style="background: rgba(16, 185, 129, 0.1); padding: 20px; border-radius: 10px; margin: 20px 0;">
+                <h3 style="color: #10b981;">What You Get:</h3>
+                <ul style="color: #a7f3d0;">
+                    <li>📊 Real-time options analysis</li>
+                    <li>🎯 Advanced options scanner</li>
+                    <li>📈 Portfolio tracking with live P&L</li>
+                    <li>📧 Daily trading alerts</li>
+                    <li>📱 Mobile app access</li>
+                    <li>🤖 AI-powered probability calculations</li>
+                </ul>
+            </div>
+            
+            <div style="text-align: center;">
+                <a href="/dashboard" style="background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Continue Trial ({user.days_left_in_trial()} days left)
+                </a>
+            </div>
+        </div>
+        </body></html>
+        """
 
-def create_stripe_subscription(user, payment_method_id):
-    """Create Stripe subscription for user"""
+@app.route('/create-stripe-subscription', methods=['POST'])
+def create_stripe_subscription_route():
+    """Handle Stripe subscription creation"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
     try:
-        if not user.stripe_customer_id:
-            customer = create_stripe_customer(user)
-            if not customer:
-                return None
+        payment_method_id = request.json.get('payment_method_id')
+        if not payment_method_id:
+            return jsonify({'error': 'Payment method required'}), 400
         
-        # Attach payment method to customer
-        stripe.PaymentMethod.attach(
-            payment_method_id,
-            customer=user.stripe_customer_id,
-        )
-        
-        # Set as default payment method
-        stripe.Customer.modify(
-            user.stripe_customer_id,
-            invoice_settings={'default_payment_method': payment_method_id}
-        )
-        
-        # Create subscription (starts after trial ends)
-        subscription = stripe.Subscription.create(
-            customer=user.stripe_customer_id,
-            items=[{'price': 'price_shadowstrike_monthly'}],  # You'll need to create this in Stripe
-            trial_end=int(user.trial_end_date.timestamp()),
-            metadata={'user_id': user.id}
-        )
-        
-        user.stripe_subscription_id = subscription.id
-        user.payment_method = 'stripe'
-        db.session.commit()
-        
-        return subscription
+        subscription = create_stripe_subscription(user, payment_method_id)
+        if subscription:
+            # Record transaction
+            transaction = PaymentTransaction(
+                user_id=user.id,
+                transaction_id=subscription.id,
+                payment_method='stripe',
+                amount=49.00,
+                status='pending',
+                description='Monthly subscription setup'
+            )
+            db.session.add(transaction)
+            db.session.commit()
+            
+            flash('Subscription created successfully! You will be billed when your trial ends.', 'success')
+            return jsonify({'success': True, 'subscription_id': subscription.id})
+        else:
+            return jsonify({'error': 'Failed to create subscription'}), 500
+            
     except Exception as e:
         logger.error(f"Error creating Stripe subscription: {e}")
-        return None
+        return jsonify({'error': 'Subscription creation failed'}), 500
 
-def send_payment_success_email(user, amount, transaction_id):
-    """Send payment confirmation email"""
+@app.route('/create-paypal-subscription', methods=['POST'])
+def create_paypal_subscription_route():
+    """Handle PayPal subscription creation"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Not authenticated'}), 401
+    
+    user = User.query.get(session['user_id'])
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
     try:
-        msg = Message(
-            subject="💳 Payment Confirmation - ShadowStrike Options",
-            recipients=[user.email],
-            html=f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; background: #1f2937; color: white; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px; }}
-                    .header {{ text-align: center; margin-bottom: 25px; }}
-                    .content {{ background: rgba(6, 95, 70, 0.3); padding: 25px; border-radius: 10px; }}
-                    .amount {{ font-size: 2em; color: #10b981; font-weight: bold; text-align: center; margin: 20px 0; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>💳 Payment Confirmed!</h1>
+        # Create PayPal subscription (simplified for demo)
+        # In production, you'd create actual PayPal subscription plans
+        
+        user.payment_method = 'paypal'
+        user.subscription_status = 'trial'  # Keep trial status until trial ends
+        
+        # Record transaction
+        transaction = PaymentTransaction(
+            user_id=user.id,
+            transaction_id=f'paypal_{user.id}_{int(datetime.now().timestamp())}',
+            payment_method='paypal',
+            amount=49.00,
+            status='pending',
+            description='PayPal subscription setup'
+        )
+        db.session.add(transaction)
+        db.session.commit()
+        
+        flash('PayPal subscription set up successfully! You will be billed when your trial ends.', 'success')
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"Error creating PayPal subscription: {e}")
+        return jsonify({'error': 'PayPal subscription creation failed'}), 500
+
+@app.route('/subscription-success')
+def subscription_success():
+    """Subscription success page"""
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
+    user = User.query.get(session['user_id'])
+    if not user:
+        return redirect(url_for('login'))
+    
+    return f"""
+    <!DOCTYPE html>
+    <html><head><title>Subscription Success - ShadowStrike Options</title></head>
+    <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+    <div style="max-width: 600px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 40px; border-radius: 15px; text-align: center;">
+        <h1 style="color: #10b981;">🎉 Subscription Activated!</h1>
+        <p style="font-size: 1.2em; margin: 20px 0;">Thank you, {user.username}!</p>
+        <p style="color: #a7f3d0;">Your subscription has been set up successfully.</p>
+        
+        <div style="background: rgba(16, 185, 129, 0.2); padding: 20px; border-radius: 10px; margin: 30px 0;">
+            <h3 style="color: #10b981;">What happens next:</h3>
+            <ul style="color: #a7f3d0; text-align: left; display: inline-block;">
+                <li>Continue enjoying your free trial ({user.days_left_in_trial()} days left)</li>
+                <li>Your first payment of $49 will be charged when trial ends</li>
+                <li>You'll receive email confirmation and receipts</li>
+                <li>Cancel anytime from your dashboard</li>
+            </ul>
+        </div>
+        
+        <a href="/dashboard" style="background: #10b981; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 1.1em;">
+            Continue to Dashboard
+        </a>
+    </div>
+    </body></html>
+    """
+
+@app.route('/billing')
+def billing():
+    """Billing and subscription management"""
+    if 'user_id' not in session:
+        flash('Please login to view billing', 'error')
+        return redirect(url_for('login'))
+    
+    user = User.query.get(session['user_id'])
+    if not user:
+        return redirect(url_for('login'))
+    
+    # Get payment history
+    transactions = PaymentTransaction.query.filter_by(user_id=user.id).order_by(PaymentTransaction.transaction_date.desc()).limit(10).all()
+    
+    return f"""
+    <!DOCTYPE html>
+    <html><head><title>Billing - ShadowStrike Options</title></head>
+    <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+    <div style="max-width: 800px; margin: 0 auto;">
+        <h1 style="color: #10b981; text-align: center;">💳 Billing & Subscription</h1>
+        
+        <!-- Current Subscription -->
+        <div style="background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px; margin: 20px 0;">
+            <h2 style="color: #10b981;">Current Plan</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 20px 0;">
+                <div>
+                    <strong>Status:</strong> {user.subscription_status.title()}<br>
+                    <strong>Payment Method:</strong> {user.payment_method.title() if user.payment_method else 'None'}<br>
+                    {'<strong>Trial Ends:</strong> ' + user.trial_end_date.strftime('%B %d, %Y') if user.subscription_status == 'trial' else ''}
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 2em; color: #10b981; font-weight: bold;">
+                        {'FREE' if user.subscription_status == 'trial' else '$49/month'}
                     </div>
-                    
-                    <div class="content">
-                        <h2>Thank you, {user.username}!</h2>
-                        <p>Your payment has been successfully processed.</p>
-                        
-                        <div class="amount">${amount:.2f}</div>
-                        
-                        <p><strong>Transaction Details:</strong></p>
-                        <ul>
-                            <li>Transaction ID: {transaction_id}</li>
-                            <li>Date: {datetime.now().strftime('%B %d, %Y')}</li>
-                            <li>Service: ShadowStrike Options Monthly Subscription</li>
-                            <li>Next Billing: {(datetime.now() + timedelta(days=30)).strftime('%B %d, %Y')}</li>
-                        </ul>
-                        
-                        <p>Your subscription is now active and you have full access to all premium features!</p>
-                        
-                        <p style="text-align: center; margin-top: 25px;">
-                            <a href="https://shadowstrike-options-2025.onrender.com/dashboard" 
-                               style="background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">
-                                Access Your Dashboard
-                            </a>
-                        </p>
+                    <div style="color: #a7f3d0; font-size: 0.9em;">
+                        {f"{user.days_left_in_trial()} days left in trial" if user.subscription_status == 'trial' else "Next billing: " + (datetime.now() + timedelta(days=30)).strftime('%B %d')}
                     </div>
                 </div>
-            </body>
-            </html>
-            """
-        )
+            </div>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                {'<a href="/subscribe" style="background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">Set Up Billing</a>' if user.subscription_status == 'trial' and not user.payment_method else ''}
+                <a href="/cancel-subscription" style="background: #ef4444; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold; margin-left: 10px;">Cancel Subscription</a>
+            </div>
+        </div>
         
-        thread = threading.Thread(target=send_email_async, args=(app, msg))
-        thread.start()
-        return True
-    except Exception as e:
-        logger.error(f"Error sending payment confirmation email: {e}")
-        return False
-
-def send_trial_expiry_warning(user, days_left):
-    """Send trial expiry warning email"""
-    try:
-        msg = Message(
-            subject=f"⏰ {days_left} Days Left in Your ShadowStrike Trial",
-            recipients=[user.email],
-            html=f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; background: #1f2937; color: white; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px; }}
-                    .urgent {{ background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; padding: 20px; border-radius: 10px; margin: 20px 0; }}
-                    .button {{ background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1>⏰ Your Trial is Ending Soon!</h1>
-                    
-                    <div class="urgent">
-                        <h3>Only {days_left} days left in your free trial!</h3>
-                        <p>Don't lose access to your profitable trading analysis.</p>
-                    </div>
-                    
-                    <p>Hi {user.username},</p>
-                    <p>Your 30-day free trial of ShadowStrike Options will expire in {days_left} days.</p>
-                    
-                    <h3>🎯 What you'll lose access to:</h3>
-                    <ul>
-                        <li>Real-time options analysis</li>
-                        <li>Daily high-probability trade alerts</li>
-                        <li>Portfolio tracking with live P&L</li>
-                        <li>Advanced options scanner</li>
-                        <li>Mobile app access</li>
-                    </ul>
-                    
-                    <p style="text-align: center; margin: 25px 0;">
-                        <a href="https://shadowstrike-options-2025.onrender.com/subscribe" class="button">
-                            Continue for Only $49/month
-                        </a>
-                    </p>
-                    
-                    <p><small>Cancel anytime. No long-term contracts.</small></p>
+        <!-- Payment History -->
+        <div style="background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px; margin: 20px 0;">
+            <h2 style="color: #10b981;">Payment History</h2>
+            {''.join([f'''
+            <div style="background: rgba(16, 185, 129, 0.1); padding: 15px; border-radius: 10px; margin: 10px 0; display: flex; justify-content: space-between;">
+                <div>
+                    <strong>{transaction.description}</strong><br>
+                    <small style="color: #a7f3d0;">{transaction.transaction_date.strftime('%B %d, %Y')} • {transaction.payment_method.title()}</small>
                 </div>
-            </body>
-            </html>
-            """
-        )
-        
-        thread = threading.Thread(target=send_email_async, args=(app, msg))
-        thread.start()
-        return True
-    except Exception as e:
-        logger.error(f"Error sending trial warning email: {e}")
-        return False
-
-# Keep all existing email functions (send_email_async, send_welcome_email, etc.)
-def send_email_async(app, msg):
-    """Send email in background thread"""
-    with app.app_context():
-        try:
-            mail.send(msg)
-            logger.info(f"Email sent successfully to {msg.recipients}")
-        except Exception as e:
-            logger.error(f"Failed to send email: {e}")
-
-def send_welcome_email(user_email, username):
-    """Send welcome email to new users"""
-    try:
-        msg = Message(
-            subject="🎯 Welcome to ShadowStrike Options!",
-            recipients=[user_email],
-            html=f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; background: #1f2937; color: white; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px; }}
-                    .header {{ text-align: center; margin-bottom: 30px; }}
-                    .content {{ background: rgba(6, 95, 70, 0.3); padding: 25px; border-radius: 10px; margin-bottom: 20px; }}
-                    .button {{ background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; }}
-                    .footer {{ text-align: center; font-size: 0.9em; color: #a7f3d0; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>🎯 Welcome to ShadowStrike Options!</h1>
-                        <p>Elite Trading Intelligence Platform</p>
-                    </div>
-                    
-                    <div class="content">
-                        <h2>Hello {username}!</h2>
-                        <p>Welcome to the future of options trading! Your account has been successfully created and your <strong>30-day free trial</strong> has begun.</p>
-                        
-                        <h3>🚀 What You Get:</h3>
-                        <ul>
-                            <li>📊 Real-time market data and analysis</li>
-                            <li>🎯 Advanced options scanner</li>
-                            <li>📈 Portfolio tracking with live P&L</li>
-                            <li>📧 Daily trading alerts and opportunities</li>
-                            <li>🤖 AI-powered probability calculations</li>
-                            <li>📱 Mobile app access</li>
-                        </ul>
-                        
-                        <p style="text-align: center; margin: 25px 0;">
-                            <a href="https://shadowstrike-options-2025.onrender.com/login" class="button">Access Your Dashboard</a>
-                        </p>
-                    </div>
-                    
-                    <div class="footer">
-                        <p>Start exploring your dashboard and discover profitable trading opportunities!</p>
-                        <p><small>After your 30-day trial, continue for just $49/month. Cancel anytime.</small></p>
-                    </div>
+                <div style="text-align: right;">
+                    <strong>${transaction.amount:.2f}</strong><br>
+                    <small style="color: {'#10b981' if transaction.status == 'completed' else '#6b7280'};">{transaction.status.title()}</small>
                 </div>
-            </body>
-            </html>
-            """
-        )
+            </div>
+            ''' for transaction in transactions]) if transactions else '<p style="color: #a7f3d0; text-align: center; padding: 20px;">No payment history yet</p>'}
+        </div>
         
-        thread = threading.Thread(target=send_email_async, args=(app, msg))
-        thread.start()
-        return True
-    except Exception as e:
-        logger.error(f"Error sending welcome email: {e}")
-        return False
+        <div style="text-align: center;">
+            <a href="/dashboard" style="color: #10b981; text-decoration: none;">← Back to Dashboard</a>
+        </div>
+    </div>
+    </body></html>
+    """
 
-# Keep all existing market data functions (same as before)
-def get_stock_price(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
-        return {
-            'symbol': symbol,
-            'price': round(current_price, 2) if current_price else 0,
-            'change': round(info.get('regularMarketChange', 0), 2),
-            'change_percent': round(info.get('regularMarketChangePercent', 0), 2),
-            'volume': info.get('volume', 0),
-            'market_cap': info.get('marketCap', 0)
-        }
-    except Exception as e:
-        logger.error(f"Error getting price for {symbol}: {e}")
-        return {'symbol': symbol, 'price': 0, 'change': 0, 'change_percent': 0, 'volume': 0, 'market_cap': 0}
-
-def get_market_status():
-    try:
-        now = datetime.now()
-        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-        market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-        
-        is_weekday = now.weekday() < 5
-        is_market_hours = market_open <= now <= market_close
-        
-        return {
-            'is_open': is_weekday and is_market_hours,
-            'status': 'OPEN' if (is_weekday and is_market_hours) else 'CLOSED',
-            'next_open': 'Monday 9:30 AM ET' if now.weekday() >= 5 else 'Tomorrow 9:30 AM ET'
-        }
-    except:
-        return {'is_open': False, 'status': 'UNKNOWN', 'next_open': 'Unknown'}
-
-def get_top_movers():
-    symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL']
-    movers = []
+@app.route('/cancel-subscription', methods=['GET', 'POST'])
+def cancel_subscription():
+    """Cancel subscription"""
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
     
-    for symbol in symbols:
+    user = User.query.get(session['user_id'])
+    if not user:
+        return redirect(url_for('login'))
+    
+    if request.method == 'POST':
         try:
-            data = get_stock_price(symbol)
-            if data['price'] > 0:
-                movers.append(data)
-        except:
-            continue
-    
-    movers.sort(key=lambda x: abs(x['change_percent']), reverse=True)
-    return movers[:5]
-
-def calculate_option_probability(stock_price, strike_price, days_to_expiry, option_type='CALL'):
-    try:
-        if days_to_expiry <= 0:
-            return 0
-        
-        price_ratio = stock_price / strike_price
-        time_factor = days_to_expiry / 365
-        
-        if option_type == 'CALL':
-            if price_ratio >= 1:
-                base_prob = 60 + (price_ratio - 1) * 30
-            else:
-                base_prob = 40 * price_ratio
-        else:
-            if price_ratio <= 1:
-                base_prob = 60 + (1 - price_ratio) * 30
-            else:
-                base_prob = 40 / price_ratio
-        
-        time_adjusted = base_prob * (1 + time_factor * 0.5)
-        return min(95, max(5, round(time_adjusted, 1)))
-    except:
-        return 50
-
-def generate_daily_picks():
-    picks = []
-    symbols = ['SPY', 'QQQ', 'AAPL']
-    
-    for symbol in symbols:
-        try:
-            stock_data = get_stock_price(symbol)
-            if stock_data['price'] > 0:
-                for option_type in ['CALL', 'PUT']:
-                    strike = stock_data['price'] + (10 if option_type == 'CALL' else -10)
-                    probability = calculate_option_probability(stock_data['price'], strike, 30, option_type)
-                    premium = round(2 + (probability / 100) * 8, 2)
-                    
-                    if probability >= 65:
-                        picks.append({
-                            'symbol': symbol,
-                            'type': option_type,
-                            'strike': int(strike),
-                            'probability': probability,
-                            'premium': premium
-                        })
-        except:
-            continue
-    
-    return sorted(picks, key=lambda x: x['probability'], reverse=True)[:5]
-
-# Access Control Decorator
-def subscription_required(f):
-    """Decorator to check if user has active subscription"""
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            flash('Please login to access this feature', 'error')
-            return redirect(url_for('login'))
-        
-        user = User.query.get(session['user_id'])
-        if not user or not user.is_subscription_active():
-            flash('Your trial has expired. Please subscribe to continue using ShadowStrike Options.', 'error')
-            return redirect(url_for('subscribe'))
-        
-        return f(*args, **kwargs)
-    decorated_function.__name__ = f.__name__
-    return decorated_function
-
-# Database initialization function
-def init_database():
-    try:
-        with app.app_context():
-            db.drop_all()
-            db.create_all()
+            # Cancel Stripe subscription if exists
+            if user.stripe_subscription_id:
+                stripe.Subscription.delete(user.stripe_subscription_id)
             
-            # Create demo admin user
-            admin = User(
-                username='admin',
-                email='admin@shadowstrike.com',
-                password_hash=generate_password_hash('admin123'),
-                email_verified=True,
-                subscription_status='active',  # Give admin permanent access
-                subscription_start_date=datetime.utcnow(),
-                subscription_end_date=datetime.utcnow() + timedelta(days=365)
-            )
-            db.session.add(admin)
-            
-            # Create demo user with active trial
-            demo = User(
-                username='demo',
-                email='demo@shadowstrike.com',
-                password_hash=generate_password_hash('demo123'),
-                email_verified=True,
-                subscription_status='trial',
-                trial_end_date=datetime.utcnow() + timedelta(days=25)  # 25 days left
-            )
-            db.session.add(demo)
-            
-            # Add some demo trades
-            demo_trades = [
-                Trade(user_id=2, symbol='AAPL', option_type='CALL', strike_price=180, 
-                      entry_price=2.50, quantity=5, entry_date=datetime.now() - timedelta(days=5)),
-                Trade(user_id=2, symbol='MSFT', option_type='PUT', strike_price=420, 
-                      entry_price=8.20, quantity=2, entry_date=datetime.now() - timedelta(days=3)),
-                Trade(user_id=2, symbol='TSLA', option_type='CALL', strike_price=250, 
-                      entry_price=12.80, quantity=1, entry_date=datetime.now() - timedelta(days=1))
-            ]
-            
-            for trade in demo_trades:
-                db.session.add(trade)
+            # Update user status
+            user.subscription_status = 'cancelled'
+            user.subscription_end_date = user.trial_end_date if user.subscription_status == 'trial' else datetime.utcnow()
             
             db.session.commit()
-            logger.info("Database initialized successfully with payment system!")
-            return True
+            
+            flash('Subscription cancelled successfully. You can continue using the platform until your current period ends.', 'info')
+            return redirect(url_for('billing'))
+            
+        except Exception as e:
+            logger.error(f"Error cancelling subscription: {e}")
+            flash('Error cancelling subscription. Please contact support.', 'error')
+    
+    return f"""
+    <!DOCTYPE html>
+    <html><head><title>Cancel Subscription - ShadowStrike Options</title></head>
+    <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+    <div style="max-width: 600px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 40px; border-radius: 15px; text-align: center;">
+        <h1 style="color: #ef4444;">😔 We're Sorry to See You Go</h1>
+        <p style="margin: 20px 0;">Are you sure you want to cancel your ShadowStrike Options subscription?</p>
+        
+        <div style="background: rgba(239, 68, 68, 0.2); padding: 20px; border-radius: 10px; margin: 30px 0;">
+            <h3 style="color: #ef4444;">You'll lose access to:</h3>
+            <ul style="color: #a7f3d0; text-align: left; display: inline-block;">
+                <li>Real-time options analysis</li>
+                <li>Daily trading alerts</li>
+                <li>Portfolio tracking</li>
+                <li>Mobile app access</li>
+                <li>Options scanner</li>
+            </ul>
+        </div>
+        
+        <form method="POST" style="display: inline-block; margin-right: 10px;">
+            <button type="submit" style="background: #ef4444; color: white; padding: 12px 25px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">
+                Yes, Cancel Subscription
+            </button>
+        </form>
+        
+        <a href="/billing" style="background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+            Keep Subscription
+        </a>
+    </div>
+    </body></html>
+    """
+
+# Update existing dashboard route to include trial warning
+@app.route('/dashboard')
+@subscription_required  # This will redirect expired users to subscribe
+def dashboard():
+    if 'user_id' not in session:
+        flash('Please login to access the dashboard', 'error')
+        return redirect(url_for('login'))
+    
+    try:
+        user = User.query.get(session['user_id'])
+        if not user:
+            session.clear()
+            flash('User not found. Please login again.', 'error')
+            return redirect(url_for('login'))
+        
+        # Show trial warning if less than 7 days left
+        if user.subscription_status == 'trial' and user.days_left_in_trial() <= 7:
+            flash(f'Your trial expires in {user.days_left_in_trial()} days. Subscribe now to keep your access!', 'warning')
+        
+        # Get market data
+        market_status = get_market_status()
+        top_movers = get_top_movers()
+        
+        # Get user's trades with real P&L
+        trades = Trade.query.filter_by(user_id=user.id).all()
+        
+        # Calculate portfolio stats with real prices
+        total_pnl = 0
+        open_trades = 0
+        enhanced_trades = []
+        
+        for trade in trades:
+            if trade.status == 'open':
+                open_trades += 1
+                # Get current stock price
+                stock_data = get_stock_price(trade.symbol)
+                current_stock_price = stock_data['price']
+                
+                # Calculate option probability
+                days_to_expiry = 30  # Assume 30 days for demo
+                probability = calculate_option_probability(
+                    current_stock_price, trade.strike_price, days_to_expiry, trade.option_type
+                )
+                
+                # Estimate current option price (simplified)
+                if trade.option_type == 'CALL':
+                    intrinsic_value = max(0, current_stock_price - trade.strike_price)
+                else:
+                    intrinsic_value = max(0, trade.strike_price - current_stock_price)
+                
+                time_value = trade.entry_price * 0.3  # Assume 30% time value remaining
+                current_option_price = intrinsic_value + time_value
+                
+                pnl = (current_option_price - trade.entry_price) * trade.quantity * 100
+                total_pnl += pnl
+                
+                enhanced_trades.append({
+                    'trade': trade,
+                    'current_stock_price': current_stock_price,
+                    'current_option_price': round(current_option_price, 2),
+                    'pnl': round(pnl, 2),
+                    'probability': probability
+                })
+        
+        try:
+            return render_template('dashboard.html', 
+                                 user=user, 
+                                 trades=enhanced_trades, 
+                                 total_pnl=total_pnl,
+                                 open_trades=open_trades,
+                                 market_status=market_status,
+                                 top_movers=top_movers)
+        except Exception as e:
+            logger.error(f"Error rendering dashboard.html: {e}")
+            return f"""
+            <!DOCTYPE html>
+            <html><head><title>Dashboard - ShadowStrike Options</title></head>
+            <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
+            <h1 style="color: #10b981;">🎯 ShadowStrike Options - Dashboard</h1>
+            <p>Welcome {user.username}! ({user.subscription_status} - {user.days_left_in_trial() if user.subscription_status == 'trial' else 'Active'})</p>
+            <p>Market Status: {market_status['status']}</p>
+            <p>Portfolio P&L: ${total_pnl:.2f}</p>
+            <p>Open Trades: {open_trades}</p>
+            
+            {'<div style="background: rgba(239, 68, 68, 0.2); padding: 15px; border-radius: 10px; margin: 20px 0;"><strong>⏰ Trial expires in ' + str(user.days_left_in_trial()) + ' days!</strong> <a href="/subscribe" style="color: #10b981;">Subscribe now</a></div>' if user.subscription_status == 'trial' and user.days_left_in_trial() <= 7 else ''}
+            
+            <h3>Top Market Movers:</h3>
+            {''.join([f"<p>{mover['symbol']}: ${mover['price']} ({mover['change_percent']:+.2f}%)</p>" for mover in top_movers])}
+            
+            <p><a href="/logout" style="color: #ef4444;">Logout</a> | 
+            <a href="/billing" style="color: #10b981;">Billing</a> | 
+            <a href="/email-settings" style="color: #10b981;">Email Settings</a> | 
+            <a href="/market-data" style="color: #10b981;">Market Data</a></p>
+            </body></html>
+            """
     except Exception as e:
-        logger.error(f"Database initialization error: {e}")
-        return False
+        logger.error(f"Dashboard error: {e}")
+        return redirect(url_for('login'))
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
