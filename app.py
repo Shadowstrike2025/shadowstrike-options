@@ -922,7 +922,10 @@ def status():
         <a href="/send-daily-picks" style="color: #10b981;">Send Daily Picks</a>
         </body></html>
         """
-
+@app.route('/mobile-demo')
+def mobile_demo():
+    """Mobile app demo - responsive web version"""
+    return render_template('mobile_demo.html')
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
