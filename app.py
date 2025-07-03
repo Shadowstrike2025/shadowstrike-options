@@ -1,16 +1,22 @@
 import os
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, timedelta
 import logging
 import yfinance as yf
-import requests
-from flask_mail import Mail, Message
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from ta.momentum import RSIIndicator
+from ta.trend import MACD, ADXIndicator, PPOIndicator
+import pandas as pd
+import numpy as np
+from scipy.stats import norm
+from flask_cors import CORS
+from retry import retry
+import firebase_admin
+from firebase_admin import auth, credentials
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 import threading
+import stripe
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,463 +24,251 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask
 app = Flask(__name__)
-
-# Configuration
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'shadowstrike-secret-2025')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///shadowstrike.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Email Configuration
-app.config['MAIL_SERVER'] = 'smtp.gmail.com'
-app.config['MAIL_PORT'] = 587
-app.config['MAIL_USE_TLS'] = True
-app.config['MAIL_USERNAME'] = os.environ.get('EMAIL_USERNAME', 'your-email@gmail.com')
-app.config['MAIL_PASSWORD'] = os.environ.get('EMAIL_PASSWORD', 'your-app-password')
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('EMAIL_USERNAME', 'your-email@gmail.com')
+# Email Configuration (SendGrid)
+app.config['SENDGRID_API_KEY'] = os.environ.get('SENDGRID_API_KEY', 'your-sendgrid-api-key')
+sendgrid_client = SendGridAPIClient(app.config['SENDGRID_API_KEY'])
 
-# Fix for Heroku/Render Postgres URL
+# Firebase Configuration
+try:
+    cred = credentials.Certificate("path/to/your/firebase-adminsdk.json")
+    firebase_admin.initialize_app(cred)
+except Exception as e:
+    logger.error(f"Firebase initialization error: {e}")
+
+# Stripe Configuration
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', 'sk_test_demo_key')
+app.config['STRIPE_PUBLIC_KEY'] = os.environ.get('STRIPE_PUBLIC_KEY', 'pk_test_demo_key')
+
+# Fix for Render Postgres URL
 if app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
     app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://', 'postgresql://')
 
 # Initialize extensions
 db = SQLAlchemy(app)
-mail = Mail(app)
+CORS(app)
 
-# User Model
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    subscription_status = db.Column(db.String(20), default='trial')
-    trial_end_date = db.Column(db.DateTime, default=lambda: datetime.utcnow() + timedelta(days=30))
-    
-    # Email Alert Preferences
-    email_alerts_enabled = db.Column(db.Boolean, default=True)
-    daily_picks_email = db.Column(db.Boolean, default=True)
-    portfolio_alerts = db.Column(db.Boolean, default=True)
-    market_alerts = db.Column(db.Boolean, default=True)
-    email_verified = db.Column(db.Boolean, default=False)
-
-# Trade Model
+# Models
 class Trade(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user_id = db.Column(db.String(100), nullable=False)
     symbol = db.Column(db.String(10), nullable=False)
-    option_type = db.Column(db.String(4), nullable=False)
+    option_type = db.Column(db.String(10), nullable=False)
     strike_price = db.Column(db.Float, nullable=False)
     entry_price = db.Column(db.Float, nullable=False)
     quantity = db.Column(db.Integer, nullable=False)
     entry_date = db.Column(db.DateTime, default=datetime.utcnow)
     status = db.Column(db.String(10), default='open')
-    
-    user = db.relationship('User', backref='trades')
+    broker_fee = db.Column(db.Float, default=0.65)
+    stop_loss = db.Column(db.Float, nullable=True)
+    target_price = db.Column(db.Float, nullable=True)
+    exit_price = db.Column(db.Float, nullable=True)
+    exit_date = db.Column(db.DateTime, nullable=True)
+    pnl = db.Column(db.Float, nullable=True)
 
-# Email Alert Model
 class EmailAlert(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    alert_type = db.Column(db.String(50), nullable=False)  # daily_picks, portfolio_update, market_alert
+    user_id = db.Column(db.String(100), nullable=False)
+    alert_type = db.Column(db.String(50), nullable=False)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow)
     subject = db.Column(db.String(200), nullable=False)
     content = db.Column(db.Text, nullable=True)
-    
-    user = db.relationship('User', backref='email_alerts')
 
-# Email Functions
-def send_email_async(app, msg):
-    """Send email in background thread"""
-    with app.app_context():
-        try:
-            mail.send(msg)
-            logger.info(f"Email sent successfully to {msg.recipients}")
-        except Exception as e:
-            logger.error(f"Failed to send email: {e}")
+# Helper Functions
+def send_email_async(to_email, subject, content):
+    try:
+        message = Mail(
+            from_email="support@shadowstrike.com",
+            to_emails=to_email,
+            subject=subject,
+            html_content=content
+        )
+        response = sendgrid_client.send(message)
+        logger.info(f"Email sent to {to_email}: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Email sending error: {e}")
 
 def send_welcome_email(user_email, username):
-    """Send welcome email to new users"""
+    content = f"""
+    <html>
+    <body style="font-family: Arial; background: #1f2937; color: white; padding: 40px;">
+        <div style="max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px;">
+            <h1 style="color: #ffffff; text-align: center;">🎯 Welcome to ShadowStrike Options!</h1>
+            <h2>Hello {username}!</h2>
+            <p>Your 30-day free trial has begun! After your trial, continue for just $49/month.</p>
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="https://shadowstrike-options-2025.onrender.com/login" style="background: #10b981; color: white; padding: 15px 30px; text-decoration: none; border-radius: 8px; font-weight: bold;">
+                    Access Your Dashboard
+                </a>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    threading.Thread(target=send_email_async, args=(user_email, "Welcome to ShadowStrike Options!", content)).start()
+
+@retry(tries=3, delay=2, backoff=2, logger=logger)
+def fetch_stock_data(symbol, period="3mo", interval="1d"):
     try:
-        msg = Message(
-            subject="🎯 Welcome to ShadowStrike Options!",
-            recipients=[user_email],
-            html=f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; background: #1f2937; color: white; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px; }}
-                    .header {{ text-align: center; margin-bottom: 30px; }}
-                    .content {{ background: rgba(6, 95, 70, 0.3); padding: 25px; border-radius: 10px; margin-bottom: 20px; }}
-                    .button {{ background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; }}
-                    .footer {{ text-align: center; font-size: 0.9em; color: #a7f3d0; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>🎯 Welcome to ShadowStrike Options!</h1>
-                        <p>Elite Trading Intelligence Platform</p>
-                    </div>
-                    
-                    <div class="content">
-                        <h2>Hello {username}!</h2>
-                        <p>Welcome to the future of options trading! Your account has been successfully created and your <strong>30-day free trial</strong> has begun.</p>
-                        
-                        <h3>🚀 What You Get:</h3>
-                        <ul>
-                            <li>📊 Real-time market data and analysis</li>
-                            <li>🎯 Advanced options scanner</li>
-                            <li>📈 Portfolio tracking with live P&L</li>
-                            <li>📧 Daily trading alerts and opportunities</li>
-                            <li>🤖 AI-powered probability calculations</li>
-                        </ul>
-                        
-                        <p style="text-align: center; margin: 25px 0;">
-                            <a href="https://shadowstrike-options-2025.onrender.com/login" class="button">Access Your Dashboard</a>
-                        </p>
-                    </div>
-                    
-                    <div class="footer">
-                        <p>Start exploring your dashboard and discover profitable trading opportunities!</p>
-                        <p><small>This is an automated message from ShadowStrike Options Platform</small></p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-        )
-        
-        # Send in background thread
-        thread = threading.Thread(target=send_email_async, args=(app, msg))
-        thread.start()
-        
-        return True
+        stock = yf.Ticker(symbol)
+        df = stock.history(period=period, interval=interval)
+        if df.empty:
+            raise ValueError("No data returned")
+        return df
     except Exception as e:
-        logger.error(f"Error sending welcome email: {e}")
-        return False
+        logger.error(f"Error fetching data for {symbol}: {e}")
+        raise
 
-def send_daily_picks_email(user_email, username, picks):
-    """Send daily top picks email"""
+def fetch_options_data(symbol):
     try:
-        picks_html = ""
-        for pick in picks:
-            picks_html += f"""
-            <tr style="background: rgba(16, 185, 129, 0.1);">
-                <td style="padding: 10px; font-weight: bold;">{pick['symbol']}</td>
-                <td style="padding: 10px;"><span style="background: {'#10b981' if pick['type'] == 'CALL' else '#ef4444'}; color: white; padding: 3px 8px; border-radius: 4px;">{pick['type']}</span></td>
-                <td style="padding: 10px;">${pick['strike']}</td>
-                <td style="padding: 10px; font-weight: bold; color: #10b981;">{pick['probability']}%</td>
-                <td style="padding: 10px;">${pick['premium']}</td>
-            </tr>
-            """
-        
-        msg = Message(
-            subject=f"🎯 Daily Options Picks - {datetime.now().strftime('%B %d, %Y')}",
-            recipients=[user_email],
-            html=f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; background: #1f2937; color: white; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 700px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px; }}
-                    .header {{ text-align: center; margin-bottom: 25px; }}
-                    .content {{ background: rgba(6, 95, 70, 0.3); padding: 25px; border-radius: 10px; margin-bottom: 20px; }}
-                    .picks-table {{ width: 100%; border-collapse: collapse; background: rgba(16, 185, 129, 0.2); border-radius: 8px; overflow: hidden; }}
-                    .picks-table th {{ background: rgba(16, 185, 129, 0.4); padding: 12px; text-align: left; color: #a7f3d0; }}
-                    .button {{ background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; }}
-                    .footer {{ text-align: center; font-size: 0.9em; color: #a7f3d0; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>🎯 Today's Top Options Picks</h1>
-                        <p>{datetime.now().strftime('%A, %B %d, %Y')}</p>
-                    </div>
-                    
-                    <div class="content">
-                        <h2>Hello {username}!</h2>
-                        <p>Here are today's highest probability options trades identified by our AI analysis:</p>
-                        
-                        <table class="picks-table">
-                            <thead>
-                                <tr>
-                                    <th>Symbol</th>
-                                    <th>Type</th>
-                                    <th>Strike</th>
-                                    <th>Probability</th>
-                                    <th>Premium</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {picks_html}
-                            </tbody>
-                        </table>
-                        
-                        <p style="margin-top: 20px;"><strong>⚠️ Disclaimer:</strong> These are educational analysis results only. Always conduct your own research and consult with licensed financial advisors before making trading decisions.</p>
-                        
-                        <p style="text-align: center; margin: 25px 0;">
-                            <a href="https://shadowstrike-options-2025.onrender.com/dashboard" class="button">View Full Analysis</a>
-                        </p>
-                    </div>
-                    
-                    <div class="footer">
-                        <p>Happy Trading!</p>
-                        <p><small>To manage your email preferences, visit your dashboard settings.</small></p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-        )
-        
-        # Send in background thread
-        thread = threading.Thread(target=send_email_async, args=(app, msg))
-        thread.start()
-        
-        return True
+        stock = yf.Ticker(symbol)
+        expirations = stock.options
+        options = []
+        for exp in expirations[:5]:
+            opt = stock.option_chain(exp)
+            for type_, chain in [("CALL", opt.calls), ("PUT", opt.puts)]:
+                for _, row in chain.iterrows():
+                    days_to_expiry = (datetime.strptime(exp, "%Y-%m-%d") - datetime.now()).days
+                    options.append({
+                        "type": type_,
+                        "strike": round(row["strike"], 2),
+                        "expiration": exp,
+                        "price": round(row["lastPrice"], 2),
+                        "bid": round(row["bid"], 2),
+                        "ask": round(row["ask"], 2),
+                        "volume": int(row["volume"]) if pd.notna(row["volume"]) else 0,
+                        "openInterest": int(row["openInterest"]) if pd.notna(row["openInterest"]) else 0,
+                        "impliedVolatility": round(row["impliedVolatility"] * 100, 1) if pd.notna(row["impliedVolatility"]) else 20,
+                        "daysToExpiry": days_to_expiry
+                    })
+        return sorted(options, key=lambda x: (x["expiration"], x["strike"]))
     except Exception as e:
-        logger.error(f"Error sending daily picks email: {e}")
-        return False
+        logger.error(f"Error fetching options for {symbol}: {e}")
+        return []
 
-def send_portfolio_alert(user_email, username, alert_message, pnl_change):
-    """Send portfolio alert email"""
+def black_scholes(S, K, T, r, sigma, option_type="CALL"):
     try:
-        msg = Message(
-            subject=f"📊 Portfolio Alert - ShadowStrike Options",
-            recipients=[user_email],
-            html=f"""
-            <html>
-            <head>
-                <style>
-                    body {{ font-family: Arial, sans-serif; background: #1f2937; color: white; margin: 0; padding: 20px; }}
-                    .container {{ max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px; }}
-                    .header {{ text-align: center; margin-bottom: 25px; }}
-                    .alert {{ background: {'rgba(16, 185, 129, 0.2)' if pnl_change >= 0 else 'rgba(239, 68, 68, 0.2)'}; border: 1px solid {'#10b981' if pnl_change >= 0 else '#ef4444'}; padding: 20px; border-radius: 10px; margin: 20px 0; }}
-                    .button {{ background: #10b981; color: white; padding: 12px 25px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>📊 Portfolio Alert</h1>
-                    </div>
-                    
-                    <p>Hello {username},</p>
-                    
-                    <div class="alert">
-                        <h3>{'🎉' if pnl_change >= 0 else '⚠️'} {alert_message}</h3>
-                        <p style="font-size: 1.2em; font-weight: bold; color: {'#10b981' if pnl_change >= 0 else '#ef4444'};">
-                            Portfolio Change: {'$' if pnl_change >= 0 else '-$'}{abs(pnl_change):,.2f}
-                        </p>
-                    </div>
-                    
-                    <p style="text-align: center;">
-                        <a href="https://shadowstrike-options-2025.onrender.com/dashboard" class="button">View Portfolio</a>
-                    </p>
-                </div>
-            </body>
-            </html>
-            """
-        )
-        
-        # Send in background thread
-        thread = threading.Thread(target=send_email_async, args=(app, msg))
-        thread.start()
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error sending portfolio alert: {e}")
-        return False
-
-# Market Data Functions (same as before)
-def get_stock_price(symbol):
-    """Get current stock price using yfinance"""
-    try:
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
-        current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
-        return {
-            'symbol': symbol,
-            'price': round(current_price, 2) if current_price else 0,
-            'change': round(info.get('regularMarketChange', 0), 2),
-            'change_percent': round(info.get('regularMarketChangePercent', 0), 2),
-            'volume': info.get('volume', 0),
-            'market_cap': info.get('marketCap', 0)
-        }
-    except Exception as e:
-        logger.error(f"Error getting price for {symbol}: {e}")
-        return {'symbol': symbol, 'price': 0, 'change': 0, 'change_percent': 0, 'volume': 0, 'market_cap': 0}
-
-def get_market_status():
-    """Check if market is open"""
-    try:
-        now = datetime.now()
-        market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-        market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-        
-        is_weekday = now.weekday() < 5
-        is_market_hours = market_open <= now <= market_close
-        
-        return {
-            'is_open': is_weekday and is_market_hours,
-            'status': 'OPEN' if (is_weekday and is_market_hours) else 'CLOSED',
-            'next_open': 'Monday 9:30 AM ET' if now.weekday() >= 5 else 'Tomorrow 9:30 AM ET'
-        }
-    except:
-        return {'is_open': False, 'status': 'UNKNOWN', 'next_open': 'Unknown'}
-
-def get_top_movers():
-    """Get top moving stocks"""
-    symbols = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL']  # Reduced to avoid rate limits
-    movers = []
-    
-    for symbol in symbols:
-        try:
-            data = get_stock_price(symbol)
-            if data['price'] > 0:
-                movers.append(data)
-        except:
-            continue
-    
-    movers.sort(key=lambda x: abs(x['change_percent']), reverse=True)
-    return movers[:5]
-
-def calculate_option_probability(stock_price, strike_price, days_to_expiry, option_type='CALL'):
-    """Simple probability calculation for options"""
-    try:
-        if days_to_expiry <= 0:
-            return 0
-        
-        price_ratio = stock_price / strike_price
-        time_factor = days_to_expiry / 365
-        
-        if option_type == 'CALL':
-            if price_ratio >= 1:
-                base_prob = 60 + (price_ratio - 1) * 30
-            else:
-                base_prob = 40 * price_ratio
+        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        if option_type == "CALL":
+            prob_itm = norm.cdf(d1)
         else:
-            if price_ratio <= 1:
-                base_prob = 60 + (1 - price_ratio) * 30
-            else:
-                base_prob = 40 / price_ratio
-        
-        time_adjusted = base_prob * (1 + time_factor * 0.5)
-        return min(95, max(5, round(time_adjusted, 1)))
+            prob_itm = norm.cdf(-d1)
+        return round(prob_itm * 100, 1), round((1 - prob_itm) * 100, 1)
     except:
-        return 50
+        return 50, 50
 
-def generate_daily_picks():
-    """Generate daily top picks for emails"""
-    picks = []
-    symbols = ['SPY', 'QQQ', 'AAPL']
-    
-    for symbol in symbols:
-        try:
-            stock_data = get_stock_price(symbol)
-            if stock_data['price'] > 0:
-                # Generate call and put options
-                for option_type in ['CALL', 'PUT']:
-                    strike = stock_data['price'] + (10 if option_type == 'CALL' else -10)
-                    probability = calculate_option_probability(stock_data['price'], strike, 30, option_type)
-                    premium = round(2 + (probability / 100) * 8, 2)  # Estimate premium
-                    
-                    if probability >= 65:  # Only high probability trades
-                        picks.append({
-                            'symbol': symbol,
-                            'type': option_type,
-                            'strike': int(strike),
-                            'probability': probability,
-                            'premium': premium
-                        })
-        except:
-            continue
-    
-    return sorted(picks, key=lambda x: x['probability'], reverse=True)[:5]
-
-# Database initialization function
-def init_database():
+def calculate_vertical_spread(symbol, options, spread_type="bull_call"):
     try:
-        with app.app_context():
-            db.drop_all()
-            db.create_all()
-            
-            # Create demo admin user
-            admin = User(
-                username='admin',
-                email='admin@shadowstrike.com',
-                password_hash=generate_password_hash('admin123'),
-                email_verified=True
-            )
-            db.session.add(admin)
-            
-            # Create demo user
-            demo = User(
-                username='demo',
-                email='demo@shadowstrike.com',
-                password_hash=generate_password_hash('demo123'),
-                email_verified=True
-            )
-            db.session.add(demo)
-            
-            # Add some demo trades
-            demo_trades = [
-                Trade(user_id=2, symbol='AAPL', option_type='CALL', strike_price=180, 
-                      entry_price=2.50, quantity=5, entry_date=datetime.now() - timedelta(days=5)),
-                Trade(user_id=2, symbol='MSFT', option_type='PUT', strike_price=420, 
-                      entry_price=8.20, quantity=2, entry_date=datetime.now() - timedelta(days=3)),
-                Trade(user_id=2, symbol='TSLA', option_type='CALL', strike_price=250, 
-                      entry_price=12.80, quantity=1, entry_date=datetime.now() - timedelta(days=1))
-            ]
-            
-            for trade in demo_trades:
-                db.session.add(trade)
-            
-            db.session.commit()
-            logger.info("Database initialized successfully with demo data!")
-            return True
-    except Exception as e:
-        logger.error(f"Database initialization error: {e}")
-        return False
+        calls = [opt for opt in options if opt["type"] == "CALL"]
+        puts = [opt for opt in options if opt["type"] == "PUT"]
+        if spread_type == "bull_call":
+            buy = min(calls, key=lambda x: x["strike"])
+            sell = min([c for c in calls if c["strike"] > buy["strike"]], key=lambda x: x["strike"])
+            max_profit = (sell["strike"] - buy["strike"] - (buy["price"] - sell["price"])) * 100
+            max_loss = (buy["price"] - sell["price"]) * 100
+            breakeven = buy["strike"] + (buy["price"] - sell["price"])
+        elif spread_type == "bear_put":
+            buy = max(puts, key=lambda x: x["strike"])
+            sell = max([p for p in puts if p["strike"] < buy["strike"]], key=lambda x: x["strike"])
+            max_profit = (buy["strike"] - sell["strike"] - (buy["price"] - sell["price"])) * 100
+            max_loss = (buy["price"] - sell["price"]) * 100
+            breakeven = buy["strike"] - (buy["price"] - sell["price"])
+        return {
+            "type": spread_type,
+            "buy_strike": buy["strike"],
+            "sell_strike": sell["strike"],
+            "max_profit": round(max_profit, 2),
+            "max_loss": round(max_loss, 2),
+            "breakeven": round(breakeven, 2),
+            "probability": buy["probability"]
+        }
+    except:
+        return None
 
-# Routes (keeping existing routes, adding new email routes)
+def analyze_stock(symbol):
+    try:
+        df = fetch_stock_data(symbol)
+        if df is None:
+            return {"symbol": symbol, "recommendation": "No data", "details": {}}
+        
+        # Technical indicators
+        df['RSI'] = RSIIndicator(df['Close']).rsi()
+        df['MACD'] = MACD(df['Close']).macd_diff()
+        df['ADX'] = ADXIndicator(df['High'], df['Low'], df['Close']).adx()
+        df['PPO'] = PPOIndicator(df['Close']).ppo()
+        df['MA25'] = df['Close'].rolling(window=25).mean()
+        df['MA50'] = df['Close'].rolling(window=50).mean()
+        df['MA150'] = df['Close'].rolling(window=150).mean()
+        
+        # Volatility and stop-loss
+        volatility = df['Close'].pct_change().rolling(window=30).std()[-1] * 100
+        iv = fetch_options_data(symbol)[0]["impliedVolatility"] if fetch_options_data(symbol) else 20
+        stop_loss = round(df['Close'].iloc[-1] * (1 - volatility / 100), 2)
+        
+        latest = df.iloc[-1]
+        signals = []
+        if latest['MACD'] > 0 and df['MACD'].iloc[-2] <= 0:
+            signals.append("MACD Crossover (Bullish)")
+        elif latest['MACD'] < 0 and df['MACD'].iloc[-2] >= 0:
+            signals.append("MACD Crossover (Bearish)")
+        if latest['PPO'] > 0 and df['PPO'].iloc[-2] <= 0:
+            signals.append("PPO Crossover (Bullish)")
+        elif latest['PPO'] < 0 and df['PPO'].iloc[-2] >= 0:
+            signals.append("PPO Crossover (Bearish)")
+        if latest['Close'] > latest['MA50'] and df['Close'].iloc[-2] <= df['MA50'].iloc[-2]:
+            signals.append("Price/MA50 Crossover (Bullish)")
+        
+        recommendation = "Hold"
+        if latest['RSI'] < 30 and latest['MACD'] > 0 and latest['ADX'] > 25:
+            recommendation = "Call (Bullish)"
+        elif latest['RSI'] > 70 and latest['MACD'] < 0 and latest['ADX'] > 25:
+            recommendation = "Put (Bearish)"
+        
+        return {
+            "symbol": symbol,
+            "recommendation": recommendation,
+            "details": {
+                "RSI": round(latest['RSI'], 2),
+                "MACD": round(latest['MACD'], 2),
+                "ADX": round(latest['ADX'], 2),
+                "PPO": round(latest['PPO'], 2),
+                "MA25": round(latest['MA25'], 2),
+                "MA50": round(latest['MA50'], 2),
+                "MA150": round(latest['MA150'], 2),
+                "Price": round(latest['Close'], 2),
+                "Volatility": round(volatility, 2),
+                "StopLoss": stop_loss
+            },
+            "signals": signals
+        }
+    except Exception as e:
+        logger.error(f"Analysis error for {symbol}: {e}")
+        return {"symbol": symbol, "recommendation": "Error", "details": {"Error": str(e)}}
+
+# Routes
 @app.route('/')
 def index():
-    try:
-        return render_template('welcome.html')
-    except Exception as e:
-        logger.error(f"Error rendering welcome.html: {e}")
-        return f"""
-        <!DOCTYPE html>
-        <html><head><title>ShadowStrike Options</title></head>
-        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-        <h1>🎯 ShadowStrike Options</h1>
-        <p>Elite Trading Platform with Email Alerts</p>
-        <p><a href="/init-db" style="color: #10b981;">Initialize Database</a> | 
-        <a href="/login" style="color: #10b981;">Login</a> | 
-        <a href="/register" style="color: #10b981;">Register</a> | 
-        <a href="/test-email" style="color: #10b981;">Test Email</a></p>
-        </body></html>
-        """
+    return render_template('welcome.html')
 
 @app.route('/init-db')
 def initialize_database():
-    success = init_database()
-    if success:
+    try:
+        db.drop_all()
+        db.create_all()
+        db.session.commit()
+        logger.info("Database initialized successfully!")
         return """
         <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
         <h1>✅ Database Initialized!</h1>
-        <p>ShadowStrike Options database is ready with email alerts!</p>
-        <p><strong>Test Accounts Created:</strong></p>
-        <p>Username: admin | Password: admin123</p>
-        <p>Username: demo | Password: demo123</p>
-        <br>
+        <p>ShadowStrike Options database ready!</p>
         <a href="/login" style="background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Go to Login</a>
         </body></html>
         """
-    else:
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
         return """
         <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
         <h1>❌ Database Initialization Failed</h1>
@@ -483,201 +277,57 @@ def initialize_database():
         </body></html>
         """
 
-# New Email Routes
-@app.route('/test-email')
-def test_email():
-    """Test email functionality"""
-    try:
-        # Generate test picks
-        picks = generate_daily_picks()
-        
-        # Send test email
-        success = send_daily_picks_email('demo@shadowstrike.com', 'Demo User', picks)
-        
-        if success:
-            return """
-            <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-            <h1>📧 Test Email Sent!</h1>
-            <p>Check your email inbox for the daily picks email.</p>
-            <a href="/" style="color: #10b981;">Back to Home</a>
-            </body></html>
-            """
-        else:
-            return """
-            <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-            <h1>❌ Email Test Failed</h1>
-            <p>Check the logs for error details</p>
-            <a href="/" style="color: #10b981;">Back to Home</a>
-            </body></html>
-            """
-    except Exception as e:
-        logger.error(f"Test email error: {e}")
-        return f"Error: {e}"
-
-@app.route('/send-daily-picks')
-def send_daily_picks():
-    """Send daily picks to all subscribed users"""
-    try:
-        picks = generate_daily_picks()
-        users = User.query.filter_by(daily_picks_email=True, email_verified=True).all()
-        
-        sent_count = 0
-        for user in users:
-            if send_daily_picks_email(user.email, user.username, picks):
-                sent_count += 1
-                
-                # Log the email
-                alert = EmailAlert(
-                    user_id=user.id,
-                    alert_type='daily_picks',
-                    subject=f"Daily Options Picks - {datetime.now().strftime('%B %d, %Y')}",
-                    content=f"Sent {len(picks)} picks"
-                )
-                db.session.add(alert)
-        
-        db.session.commit()
-        
-        return f"""
-        <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-        <h1>📧 Daily Picks Sent!</h1>
-        <p>Sent to {sent_count} users</p>
-        <p>Picks generated: {len(picks)}</p>
-        <a href="/" style="color: #10b981;">Back to Home</a>
-        </body></html>
-        """
-    except Exception as e:
-        logger.error(f"Daily picks email error: {e}")
-        return f"Error: {e}"
-
-# Keep all existing routes (login, register, dashboard, etc.) - they remain the same
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
         try:
-            username = request.form.get('username')
+            email = request.form.get('email')
             password = request.form.get('password')
-            
-            user = User.query.filter_by(username=username).first()
-            
-            if user and check_password_hash(user.password_hash, password):
-                session['user_id'] = user.id
-                session['username'] = user.username
-                flash('Login successful!', 'success')
-                return redirect(url_for('dashboard'))
-            else:
-                flash('Invalid username or password', 'error')
-        except Exception as e:
-            logger.error(f"Login error: {e}")
-            flash('Login system error. Try initializing database first.', 'error')
-    
-    try:
-        return render_template('login.html')
-    except Exception as e:
-        logger.error(f"Error rendering login.html: {e}")
-        return f"""
-        <!DOCTYPE html>
-        <html><head><title>Login - ShadowStrike Options</title></head>
-        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
-        <div style="max-width: 400px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px;">
-        <h1 style="color: #10b981; text-align: center;">🎯 ShadowStrike Options</h1>
-        <h2 style="text-align: center;">Login</h2>
-        <form method="POST">
-            <div style="margin-bottom: 15px;">
-                <label>Username:</label><br>
-                <input name="username" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <label>Password:</label><br>
-                <input name="password" type="password" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
-            </div>
-            <button type="submit" style="width: 100%; padding: 12px; background: #10b981; color: white; border: none; border-radius: 5px; font-weight: bold;">Login</button>
-        </form>
-        <p style="text-align: center; margin-top: 20px;">
-            <a href="/" style="color: #10b981;">Home</a> | 
-            <a href="/register" style="color: #10b981;">Register</a>
-        </p>
-        </div></body></html>
-        """
+            user = auth.sign_in_with_email_and_password(email, password)
+            session['user_id'] = user['localId']
+            session['email'] = user['email']
+            flash('Login successful!', 'success')
+            return redirect(url_for('dashboard'))
+        except:
+            flash('Invalid credentials', 'error')
+    return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
         try:
-            username = request.form.get('username')
             email = request.form.get('email')
             password = request.form.get('password')
-            terms = request.form.get('terms_accepted')
-            
-            if not all([username, email, password]):
-                flash('All fields are required', 'error')
-                return redirect(url_for('register'))
-            
-            if not terms:
-                flash('You must accept the terms and conditions', 'error')
-                return redirect(url_for('register'))
-            
-            if User.query.filter_by(username=username).first():
-                flash('Username already exists', 'error')
-                return redirect(url_for('register'))
-            
-            if User.query.filter_by(email=email).first():
-                flash('Email already registered', 'error')
-                return redirect(url_for('register'))
-            
-            # Create new user
-            user = User(
+            username = request.form.get('username')
+            color = request.form.get('color', '#10b981')
+            user = auth.create_user(email=email, password=password)
+            db.session.add(User(
+                id=user.uid,
                 username=username,
                 email=email,
-                password_hash=generate_password_hash(password)
-            )
-            db.session.add(user)
+                subscription_status='trial',
+                trial_end_date=datetime.utcnow() + timedelta(days=30),
+                color=color
+            ))
             db.session.commit()
-            
-            # Send welcome email
             send_welcome_email(email, username)
-            
-            flash('Registration successful! Check your email for welcome message.', 'success')
+            flash('Registration successful! Check your email.', 'success')
             return redirect(url_for('login'))
-            
-        except Exception as e:
-            logger.error(f"Registration error: {e}")
-            flash('Registration failed. Try initializing database first.', 'error')
-    
-    try:
-        return render_template('register.html')
-    except Exception as e:
-        logger.error(f"Error rendering register.html: {e}")
-        return f"""
-        <!DOCTYPE html>
-        <html><head><title>Register - ShadowStrike Options</title></head>
-        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
-        <div style="max-width: 400px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px;">
-        <h1 style="color: #10b981; text-align: center;">🎯 ShadowStrike Options</h1>
-        <h2 style="text-align: center;">Register</h2>
-        <form method="POST">
-            <div style="margin-bottom: 15px;">
-                <label>Username:</label><br>
-                <input name="username" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <label>Email:</label><br>
-                <input name="email" type="email" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <label>Password:</label><br>
-                <input name="password" type="password" style="width: 100%; padding: 10px; border-radius: 5px; border: none;" required>
-            </div>
-            <div style="margin-bottom: 15px;">
-                <input name="terms_accepted" type="checkbox" required> I accept the terms and disclaimer
-            </div>
-            <button type="submit" style="width: 100%; padding: 12px; background: #10b981; color: white; border: none; border-radius: 5px; font-weight: bold;">Register & Get Email Alerts</button>
-        </form>
-        <p style="text-align: center; margin-top: 20px;">
-            <a href="/" style="color: #10b981;">Home</a> | 
-            <a href="/login" style="color: #10b981;">Login</a>
-        </p>
-        </div></body></html>
-        """
+        except:
+            flash('Registration failed', 'error')
+    return render_template('register.html')
+
+@app.route('/reset-password', methods=['GET', 'POST'])
+def reset_password():
+    if request.method == 'POST':
+        try:
+            email = request.form.get('email')
+            auth.send_password_reset_email(email)
+            flash('Password reset email sent', 'success')
+            return redirect(url_for('login'))
+        except:
+            flash('Email not found', 'error')
+    return render_template('reset_password.html')
 
 @app.route('/dashboard')
 def dashboard():
@@ -685,162 +335,242 @@ def dashboard():
         flash('Please login to access the dashboard', 'error')
         return redirect(url_for('login'))
     
-    try:
-        user = User.query.get(session['user_id'])
-        if not user:
-            session.clear()
-            flash('User not found. Please login again.', 'error')
-            return redirect(url_for('login'))
-        
-        # Get market data
-        market_status = get_market_status()
-        top_movers = get_top_movers()
-        
-        # Get user's trades with real P&L
-        trades = Trade.query.filter_by(user_id=user.id).all()
-        
-        # Calculate portfolio stats with real prices
-        total_pnl = 0
-        open_trades = 0
-        enhanced_trades = []
-        
-        for trade in trades:
-            if trade.status == 'open':
-                open_trades += 1
-                # Get current stock price
-                stock_data = get_stock_price(trade.symbol)
-                current_stock_price = stock_data['price']
-                
-                # Calculate option probability
-                days_to_expiry = 30  # Assume 30 days for demo
-                probability = calculate_option_probability(
-                    current_stock_price, trade.strike_price, days_to_expiry, trade.option_type
-                )
-                
-                # Estimate current option price (simplified)
-                if trade.option_type == 'CALL':
-                    intrinsic_value = max(0, current_stock_price - trade.strike_price)
-                else:
-                    intrinsic_value = max(0, trade.strike_price - current_stock_price)
-                
-                time_value = trade.entry_price * 0.3  # Assume 30% time value remaining
-                current_option_price = intrinsic_value + time_value
-                
-                pnl = (current_option_price - trade.entry_price) * trade.quantity * 100
-                total_pnl += pnl
-                
-                enhanced_trades.append({
-                    'trade': trade,
-                    'current_stock_price': current_stock_price,
-                    'current_option_price': round(current_option_price, 2),
-                    'pnl': round(pnl, 2),
-                    'probability': probability
-                })
-        
-        try:
-            return render_template('dashboard.html', 
-                                 user=user, 
-                                 trades=enhanced_trades, 
-                                 total_pnl=total_pnl,
-                                 open_trades=open_trades,
-                                 market_status=market_status,
-                                 top_movers=top_movers)
-        except Exception as e:
-            logger.error(f"Error rendering dashboard.html: {e}")
-            return f"""
-            <!DOCTYPE html>
-            <html><head><title>Dashboard - ShadowStrike Options</title></head>
-            <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
-            <h1 style="color: #10b981;">🎯 ShadowStrike Options - Dashboard</h1>
-            <p>Welcome {user.username}! ({user.subscription_status})</p>
-            <p>Email Alerts: {'Enabled' if user.email_alerts_enabled else 'Disabled'}</p>
-            <p>Market Status: {market_status['status']}</p>
-            <p>Portfolio P&L: ${total_pnl:.2f}</p>
-            <p>Open Trades: {open_trades}</p>
-            
-            <h3>Top Market Movers:</h3>
-            {''.join([f"<p>{mover['symbol']}: ${mover['price']} ({mover['change_percent']:+.2f}%)</p>" for mover in top_movers])}
-            
-            <p><a href="/logout" style="color: #ef4444;">Logout</a> | 
-            <a href="/email-settings" style="color: #10b981;">Email Settings</a> | 
-            <a href="/market-data" style="color: #10b981;">Market Data</a></p>
-            </body></html>
-            """
-    except Exception as e:
-        logger.error(f"Dashboard error: {e}")
-        return redirect(url_for('login'))
+    user = User.query.get(session['user_id'])
+    if not user or (user.subscription_status == 'trial' and datetime.utcnow() > user.trial_end_date):
+        flash('Your trial has expired. Please subscribe.', 'error')
+        return redirect(url_for('subscribe'))
+    
+    market_status = get_market_status()
+    top_movers = get_top_movers()
+    trades = Trade.query.filter_by(user_id=session['user_id']).all()
+    
+    total_pnl = 0
+    open_trades = 0
+    enhanced_trades = []
+    for trade in trades:
+        if trade.status == 'open':
+            open_trades += 1
+            stock_data = get_stock_price(trade.symbol)
+            current_stock_price = stock_data['price']
+            options = fetch_options_data(trade.symbol)
+            current_option = next((opt for opt in options if opt['type'] == trade.option_type and opt['strike'] == trade.strike_price), None)
+            current_price = current_option['price'] if current_option else trade.entry_price
+            pnl = (current_price - trade.entry_price) * trade.quantity * 100 - trade.broker_fee * trade.quantity
+            trade.pnl = round(pnl, 2)
+            enhanced_trades.append({
+                'trade': trade,
+                'current_stock_price': current_stock_price,
+                'current_option_price': round(current_price, 2),
+                'pnl': trade.pnl
+            })
+    
+    return render_template('dashboard.html', 
+                         user=user, 
+                         trades=enhanced_trades, 
+                         total_pnl=total_pnl,
+                         open_trades=open_trades,
+                         market_status=market_status,
+                         top_movers=top_movers)
 
-@app.route('/email-settings', methods=['GET', 'POST'])
-def email_settings():
-    """Manage user email preferences"""
+@app.route('/subscribe')
+def subscribe():
     if 'user_id' not in session:
-        flash('Please login to access email settings', 'error')
+        flash('Please login to subscribe', 'error')
         return redirect(url_for('login'))
     
     user = User.query.get(session['user_id'])
-    if not user:
-        return redirect(url_for('login'))
+    if user.subscription_status == 'active':
+        flash('You already have an active subscription!', 'info')
+        return redirect(url_for('dashboard'))
+    
+    return render_template('subscribe.html', stripe_public_key=app.config['STRIPE_PUBLIC_KEY'])
+
+@app.route('/create-checkout-session', methods=['POST'])
+def create_checkout_session():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {'name': 'ShadowStrike Subscription'},
+                    'unit_amount': 4900,
+                    'recurring': {'interval': 'month'}
+                },
+                'quantity': 1
+            }],
+            mode='subscription',
+            success_url='https://shadowstrike-options-2025.onrender.com/dashboard',
+            cancel_url='https://shadowstrike-options-2025.onrender.com/subscribe'
+        )
+        user = User.query.get(session['user_id'])
+        user.stripe_customer_id = session.customer
+        user.stripe_subscription_id = session.subscription
+        user.subscription_status = 'active'
+        user.subscription_start_date = datetime.utcnow()
+        user.subscription_end_date = datetime.utcnow() + timedelta(days=30)
+        db.session.commit()
+        return jsonify({'id': session.id})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/market-data')
+def market_data():
+    market_status = get_market_status()
+    top_movers = get_top_movers()
+    return render_template('market_data.html', market_status=market_status, top_movers=top_movers)
+
+@app.route('/api/top10', methods=['GET'])
+def get_top10():
+    symbols = ['SPY', 'QQQ', 'GLD', 'SLV']
+    results = []
+    for symbol in symbols:
+        analysis = analyze_stock(symbol)
+        options = fetch_options_data(symbol)
+        for opt in options[:2]:
+            S = analysis['details'].get('Price', 100)
+            prob_itm, prob_otm = black_scholes(S, opt['strike'], opt['daysToExpiry']/365, 0.05, opt['impliedVolatility']/100, opt['type'])
+            results.append({
+                'symbol': symbol,
+                'type': opt['type'],
+                'strike': opt['strike'],
+                'expiration': opt['expiration'],
+                'price': opt['price'],
+                'probabilityITM': prob_itm,
+                'probabilityOTM': prob_otm,
+                'signals': analysis['signals'],
+                'score': prob_itm + (10 if analysis['signals'] else 0)
+            })
+        spread = calculate_vertical_spread(symbol, options)
+        if spread:
+            results.append({
+                'symbol': symbol,
+                'type': spread['type'],
+                'buy_strike': spread['buy_strike'],
+                'sell_strike': spread['sell_strike'],
+                'max_profit': spread['max_profit'],
+                'max_loss': spread['max_loss'],
+                'breakeven': spread['breakeven'],
+                'probabilityITM': spread['probability']
+            })
+    results.sort(key=lambda x: x['score'] if 'score' in x else x['probabilityITM'], reverse=True)
+    
+    # Send daily picks email (8-9 AM)
+    now = datetime.now()
+    if now.weekday() < 5 and 8 <= now.hour < 9:
+        for user in User.query.filter_by(email_alerts_enabled=True).all():
+            content = f"""
+            <html>
+            <body style="font-family: Arial; background: #1f2937; color: white; padding: 40px;">
+                <div style="max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px;">
+                    <h1 style="color: #ffffff; text-align: center;">🎯 Daily Top 10 Picks</h1>
+                    <ul>{''.join([f"<li>{item['symbol']} {item['type']} ${item['strike'] or item['buy_strike']}: {item['probabilityITM']}% ITM</li>" for item in results[:10]])}</ul>
+                </div>
+            </body>
+            </html>
+            """
+            threading.Thread(target=send_email_async, args=(user.email, "ShadowStrike Daily Picks", content)).start()
+    
+    return jsonify(results[:10])
+
+@app.route('/api/portfolio', methods=['GET', 'POST'])
+def portfolio():
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
     
     if request.method == 'POST':
-        try:
-            user.email_alerts_enabled = bool(request.form.get('email_alerts_enabled'))
-            user.daily_picks_email = bool(request.form.get('daily_picks_email'))
-            user.portfolio_alerts = bool(request.form.get('portfolio_alerts'))
-            user.market_alerts = bool(request.form.get('market_alerts'))
-            
-            db.session.commit()
-            flash('Email preferences updated successfully!', 'success')
-        except Exception as e:
-            logger.error(f"Email settings update error: {e}")
-            flash('Error updating preferences', 'error')
+        data = request.get_json()
+        trade = Trade(
+            user_id=session['user_id'],
+            symbol=data['symbol'],
+            option_type=data['type'],
+            strike_price=data['strike'] or data['buy_strike'],
+            entry_price=data['price'],
+            quantity=data['contracts'],
+            broker_fee=0.65 * data['contracts'],
+            stop_loss=data.get('stop_loss'),
+            target_price=data.get('target_price')
+        )
+        db.session.add(trade)
+        db.session.commit()
+        return jsonify({'message': 'Trade added'})
     
-    return f"""
-    <!DOCTYPE html>
-    <html><head><title>Email Settings - ShadowStrike Options</title></head>
-    <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
-    <div style="max-width: 600px; margin: 0 auto; background: rgba(6, 95, 70, 0.3); padding: 30px; border-radius: 15px;">
-        <h1 style="color: #10b981; text-align: center;">📧 Email Alert Settings</h1>
-        
-        <form method="POST">
-            <div style="margin: 20px 0;">
-                <label style="display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" name="email_alerts_enabled" {'checked' if user.email_alerts_enabled else ''}>
-                    <strong>Enable All Email Alerts</strong>
-                </label>
-            </div>
-            
-            <div style="margin: 20px 0;">
-                <label style="display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" name="daily_picks_email" {'checked' if user.daily_picks_email else ''}>
-                    Daily Top Picks Email (Morning)
-                </label>
-            </div>
-            
-            <div style="margin: 20px 0;">
-                <label style="display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" name="portfolio_alerts" {'checked' if user.portfolio_alerts else ''}>
-                    Portfolio Change Alerts
-                </label>
-            </div>
-            
-            <div style="margin: 20px 0;">
-                <label style="display: flex; align-items: center; gap: 10px;">
-                    <input type="checkbox" name="market_alerts" {'checked' if user.market_alerts else ''}>
-                    Market Opening/Closing Alerts
-                </label>
-            </div>
-            
-            <button type="submit" style="width: 100%; padding: 12px; background: #10b981; color: white; border: none; border-radius: 5px; font-weight: bold; margin-top: 20px;">
-                Save Preferences
-            </button>
-        </form>
-        
-        <p style="text-align: center; margin-top: 20px;">
-            <a href="/dashboard" style="color: #10b981;">Back to Dashboard</a>
-        </p>
-    </div>
-    </body></html>
-    """
+    trades = Trade.query.filter_by(user_id=session['user_id']).all()
+    for trade in trades:
+        if trade.status == 'open':
+            options = fetch_options_data(trade.symbol)
+            current = next((opt for opt in options if opt['type'] == trade.option_type and opt['strike'] == trade.strike_price), None)
+            trade.current_price = current['price'] if current else trade.entry_price
+            trade.pnl = (trade.current_price - trade.entry_price) * trade.quantity * 100 - trade.broker_fee
+    return jsonify([{
+        'symbol': t.symbol,
+        'type': t.option_type,
+        'strike': t.strike_price,
+        'entry_price': t.entry_price,
+        'current_price': t.current_price,
+        'pnl': t.pnl,
+        'contracts': t.quantity,
+        'stop_loss': t.stop_loss,
+        'target_price': t.target_price
+    } for t in trades])
+
+@app.route('/api/scanner', methods=['GET'])
+def scanner():
+    symbols = ['SPY', 'QQQ', 'GLD', 'SLV']
+    results = []
+    for symbol in symbols:
+        analysis = analyze_stock(symbol)
+        options = fetch_options_data(symbol)
+        for opt in options[:2]:
+            S = analysis['details'].get('Price', 100)
+            prob_itm, prob_otm = black_scholes(S, opt['strike'], opt['daysToExpiry']/365, 0.05, opt['impliedVolatility']/100, opt['type'])
+            results.append({
+                'symbol': symbol,
+                'type': opt['type'],
+                'strike': opt['strike'],
+                'expiration': opt['expiration'],
+                'price': opt['price'],
+                'probabilityITM': prob_itm,
+                'probabilityOTM': prob_otm,
+                'recommendation': analysis['recommendation']
+            })
+        spread = calculate_vertical_spread(symbol, options)
+        if spread:
+            results.append({
+                'symbol': symbol,
+                'type': spread['type'],
+                'buy_strike': spread['buy_strike'],
+                'sell_strike': spread['sell_strike'],
+                'max_profit': spread['max_profit'],
+                'max_loss': spread['max_loss'],
+                'breakeven': spread['breakeven'],
+                'probabilityITM': spread['probability']
+            })
+    results.sort(key=lambda x: x['probabilityITM'], reverse=True)
+    return jsonify(results[:10])
+
+@app.route('/api/trade-scenario', methods=['POST'])
+def trade_scenario():
+    data = request.get_json()
+    symbol = data.get('symbol')
+    target_price = data.get('target_price')
+    options = fetch_options_data(symbol)
+    results = []
+    for opt in options[:5]:
+        S = target_price
+        prob_itm, prob_otm = black_scholes(S, opt['strike'], opt['daysToExpiry']/365, 0.05, opt['impliedVolatility']/100, opt['type'])
+        results.append({
+            'symbol': symbol,
+            'type': opt['type'],
+            'strike': opt['strike'],
+            'expiration': opt['expiration'],
+            'price': opt['price'],
+            'probabilityITM': prob_itm,
+            'probabilityOTM': prob_otm
+        })
+    return jsonify(results)
 
 @app.route('/logout')
 def logout():
@@ -848,84 +578,326 @@ def logout():
     flash('You have been logged out', 'info')
     return redirect(url_for('index'))
 
-@app.route('/market-data')
-def market_data():
-    """Standalone market data page"""
-    market_status = get_market_status()
-    top_movers = get_top_movers()
-    
-    return f"""
-    <!DOCTYPE html>
-    <html><head><title>Market Data - ShadowStrike Options</title></head>
-    <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; padding: 50px;">
-    <h1 style="color: #10b981;">📊 Live Market Data</h1>
-    <p>Market Status: <strong>{market_status['status']}</strong></p>
-    <p>Next Open: {market_status['next_open']}</p>
-    
-    <h2 style="color: #10b981;">Top Market Movers</h2>
-    <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-        <tr style="background: rgba(16, 185, 129, 0.3);">
-            <th style="padding: 10px; text-align: left;">Symbol</th>
-            <th style="padding: 10px; text-align: left;">Price</th>
-            <th style="padding: 10px; text-align: left;">Change</th>
-            <th style="padding: 10px; text-align: left;">% Change</th>
-            <th style="padding: 10px; text-align: left;">Volume</th>
-        </tr>
-        {''.join([f'''
-        <tr style="background: rgba(6, 95, 70, 0.3);">
-            <td style="padding: 10px; font-weight: bold;">{mover['symbol']}</td>
-            <td style="padding: 10px;">${mover['price']}</td>
-            <td style="padding: 10px; color: {'#10b981' if mover['change'] >= 0 else '#ef4444'};">{mover['change']:+.2f}</td>
-            <td style="padding: 10px; color: {'#10b981' if mover['change_percent'] >= 0 else '#ef4444'};">{mover['change_percent']:+.2f}%</td>
-            <td style="padding: 10px;">{mover['volume']:,}</td>
-        </tr>
-        ''' for mover in top_movers])}
-    </table>
-    
-    <p><a href="/" style="color: #10b981;">Home</a> | <a href="/login" style="color: #10b981;">Login</a></p>
-    </body></html>
-    """
-
-@app.route('/status')
-def status():
-    try:
-        total_users = User.query.count()
-        total_trades = Trade.query.count()
-        total_emails = EmailAlert.query.count()
-        db_status = "Connected"
-    except Exception as e:
-        logger.error(f"Database error in status: {e}")
-        total_users = 0
-        total_trades = 0
-        total_emails = 0
-        db_status = "Not Connected"
-    
-    try:
-        return render_template('status.html', 
-                             total_users=total_users,
-                             total_trades=total_trades)
-    except Exception as e:
-        logger.error(f"Error rendering status.html: {e}")
-        return f"""
-        <!DOCTYPE html>
-        <html><head><title>Status - ShadowStrike Options</title></head>
-        <body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-        <h1 style="color: #10b981;">🎯 ShadowStrike Options - Status</h1>
-        <p>Platform Status: ✅ LIVE</p>
-        <p>Database Status: {db_status}</p>
-        <p>Total Users: {total_users}</p>
-        <p>Total Trades: {total_trades}</p>
-        <p>Emails Sent: {total_emails}</p>
-        <br>
-        <a href="/" style="color: #10b981;">Home</a> | 
-        <a href="/test-email" style="color: #10b981;">Test Email</a> |
-        <a href="/send-daily-picks" style="color: #10b981;">Send Daily Picks</a>
-        </body></html>
-        """
 @app.route('/mobile-demo')
 def mobile_demo():
-    """Mobile app demo - responsive web version"""
     return render_template('mobile_demo.html')
+
+# HTML Templates
+welcome_html = """
+<!DOCTYPE html>
+<html><head><title>ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
+    <div class="max-w-2xl mx-auto bg-gray-800/50 p-10 rounded-2xl shadow-2xl text-center">
+        <h1 class="text-4xl font-bold text-emerald-400 mb-6">🎯 ShadowStrike Options</h1>
+        <p class="text-lg text-emerald-100 mb-8">Elite Trading Platform for Options Traders</p>
+        <div class="space-y-4">
+            <a href="/login" class="block bg-emerald-500 text-white py-3 px-6 rounded-lg font-bold hover:bg-emerald-600 transition">Login</a>
+            <a href="/register" class="block bg-emerald-500 text-white py-3 px-6 rounded-lg font-bold hover:bg-emerald-600 transition">Start 30-Day Trial</a>
+            <a href="/mobile-demo" class="block bg-emerald-500 text-white py-3 px-6 rounded-lg font-bold hover:bg-emerald-600 transition">Mobile Demo</a>
+        </div>
+    </div>
+</body></html>
+"""
+
+login_html = """
+<!DOCTYPE html>
+<html><head><title>Login - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
+    <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6">🎯 ShadowStrike Options</h1>
+        <h2 class="text-xl text-center mb-6">Login</h2>
+        <form method="POST" class="space-y-4">
+            <div>
+                <label class="block text-emerald-300">Email</label>
+                <input name="email" type="email" class="w-full p-3 rounded-lg bg-gray-700 border border-emerald-500 text-white" required>
+            </div>
+            <div>
+                <label class="block text-emerald-300">Password</label>
+                <input name="password" type="password" class="w-full p-3 rounded-lg bg-gray-700 border border-emerald-500 text-white" required>
+            </div>
+            <button type="submit" class="w-full bg-emerald-500 text-white py-3 rounded-lg font-bold hover:bg-emerald-600">Login</button>
+        </form>
+        <p class="text-center mt-4">
+            <a href="/reset-password" class="text-emerald-300 hover:underline">Forgot Password?</a> | 
+            <a href="/register" class="text-emerald-300 hover:underline">Register</a>
+        </p>
+    </div>
+</body></html>
+"""
+
+register_html = """
+<!DOCTYPE html>
+<html><head><title>Register - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
+    <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6">🎯 ShadowStrike Options</h1>
+        <h2 class="text-xl text-center mb-6">Register</h2>
+        <form method="POST" class="space-y-4">
+            <div>
+                <label class="block text-emerald-300">Username</label>
+                <input name="username" class="w-full p-3 rounded-lg bg-gray-700 border border-emerald-500 text-white" required>
+            </div>
+            <div>
+                <label class="block text-emerald-300">Email</label>
+                <input name="email" type="email" class="w-full p-3 rounded-lg bg-gray-700 border border-emerald-500 text-white" required>
+            </div>
+            <div>
+                <label class="block text-emerald-300">Password</label>
+                <input name="password" type="password" class="w-full p-3 rounded-lg bg-gray-700 border border-emerald-500 text-white" required>
+            </div>
+            <div>
+                <label class="block text-emerald-300">Theme Color (e.g., #10b981)</label>
+                <input name="color" class="w-full p-3 rounded-lg bg-gray-700 border border-emerald-500 text-white" value="#10b981">
+            </div>
+            <button type="submit" class="w-full bg-emerald-500 text-white py-3 rounded-lg font-bold hover:bg-emerald-600">Start 30-Day Trial</button>
+        </form>
+        <p class="text-center mt-4">
+            <a href="/login" class="text-emerald-300 hover:underline">Already have an account?</a>
+        </p>
+    </div>
+</body></html>
+"""
+
+reset_password_html = """
+<!DOCTYPE html>
+<html><head><title>Reset Password - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
+    <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl">
+        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6">🎯 Reset Password</h1>
+        <form method="POST" class="space-y-4">
+            <div>
+                <label class="block text-emerald-300">Email</label>
+                <input name="email" type="email" class="w-full p-3 rounded-lg bg-gray-700 border border-emerald-500 text-white" required>
+            </div>
+            <button type="submit" class="w-full bg-emerald-500 text-white py-3 rounded-lg font-bold hover:bg-emerald-600">Send Reset Email</button>
+        </form>
+        <p class="text-center mt-4">
+            <a href="/login" class="text-emerald-300 hover:underline">Back to Login</a>
+        </p>
+    </div>
+</body></html>
+"""
+
+dashboard_html = """
+<!DOCTYPE html>
+<html><head><title>Dashboard - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans">
+    <div class="max-w-5xl mx-auto p-6">
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6">🎯 ShadowStrike Options - Dashboard</h1>
+        <p class="text-emerald-100">Welcome {{ user.username }}! ({{ user.subscription_status }} - {% if user.subscription_status == 'trial' %}{{ user.days_left_in_trial() }} days left{% else %}Active{% endif %})</p>
+        
+        {% if user.subscription_status == 'trial' and user.days_left_in_trial() <= 7 %}
+        <div class="bg-red-500/20 p-4 rounded-lg mb-6">
+            <p class="text-red-300">⏰ Trial expires in {{ user.days_left_in_trial() }} days! <a href="/subscribe" class="text-emerald-300 hover:underline">Subscribe now</a></p>
+        </div>
+        {% endif %}
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-gray-800/50 p-6 rounded-lg">
+                <h2 class="text-xl font-semibold text-emerald-300 mb-4">Market Status</h2>
+                <p>Status: <strong>{{ market_status.status }}</strong></p>
+                <p>Next Open: {{ market_status.next_open }}</p>
+            </div>
+            <div class="bg-gray-800/50 p-6 rounded-lg">
+                <h2 class="text-xl font-semibold text-emerald-300 mb-4">Portfolio Summary</h2>
+                <p>Total P&L: ${{ total_pnl|round(2) }}</p>
+                <p>Open Trades: {{ open_trades }}</p>
+            </div>
+        </div>
+        
+        <h2 class="text-xl font-semibold text-emerald-300 mt-6 mb-4">Top Market Movers</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full border-collapse">
+                <thead>
+                    <tr class="bg-emerald-500/30">
+                        <th class="p-3 text-left">Symbol</th>
+                        <th class="p-3 text-left">Price</th>
+                        <th class="p-3 text-left">Change</th>
+                        <th class="p-3 text-left">% Change</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for mover in top_movers %}
+                    <tr class="bg-gray-800/30">
+                        <td class="p-3">{{ mover.symbol }}</td>
+                        <td class="p-3">${{ mover.price|round(2) }}</td>
+                        <td class="p-3 {{ 'text-emerald-400' if mover.change >= 0 else 'text-red-400' }}">{{ mover.change|round(2) }}</td>
+                        <td class="p-3 {{ 'text-emerald-400' if mover.change_percent >= 0 else 'text-red-400' }}">{{ mover.change_percent|round(2) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <h2 class="text-xl font-semibold text-emerald-300 mt-6 mb-4">Your Trades</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full border-collapse">
+                <thead>
+                    <tr class="bg-emerald-500/30">
+                        <th class="p-3 text-left">Symbol</th>
+                        <th class="p-3 text-left">Type</th>
+                        <th class="p-3 text-left">Strike</th>
+                        <th class="p-3 text-left">Entry Price</th>
+                        <th class="p-3 text-left">Current Price</th>
+                        <th class="p-3 text-left">P&L</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in trades %}
+                    <tr class="bg-gray-800/30">
+                        <td class="p-3">{{ item.trade.symbol }}</td>
+                        <td class="p-3">{{ item.trade.option_type }}</td>
+                        <td class="p-3">${{ item.trade.strike_price|round(2) }}</td>
+                        <td class="p-3">${{ item.trade.entry_price|round(2) }}</td>
+                        <td class="p-3">${{ item.current_option_price|round(2) }}</td>
+                        <td class="p-3 {{ 'text-emerald-400' if item.pnl >= 0 else 'text-red-400' }}">{{ item.pnl|round(2) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="mt-6 space-x-4">
+            <a href="/logout" class="text-red-400 hover:underline">Logout</a>
+            <a href="/subscribe" class="text-emerald-300 hover:underline">Subscribe</a>
+            <a href="/mobile-demo" class="text-emerald-300 hover:underline">Mobile App</a>
+        </div>
+    </div>
+</body></html>
+"""
+
+subscribe_html = """
+<!DOCTYPE html>
+<html><head><title>Subscribe - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://js.stripe.com/v3/"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
+    <div class="max-w-2xl mx-auto bg-gray-800/50 p-10 rounded-2xl shadow-2xl text-center">
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6">💳 Continue Your Trading Success</h1>
+        <p class="text-lg text-emerald-100 mb-8">Don't lose access to profitable trading opportunities!</p>
+        <div class="bg-red-500/20 p-6 rounded-lg mb-8">
+            <h2 class="text-xl text-red-300">⏰ {{ user.days_left_in_trial() }} Days Left in Trial</h2>
+        </div>
+        <div class="text-4xl font-bold text-emerald-400 mb-8">$49/month</div>
+        <p class="text-emerald-100 mb-8">Cancel anytime • No long-term contracts</p>
+        <div class="bg-emerald-500/10 p-6 rounded-lg mb-8">
+            <h3 class="text-xl text-emerald-300 mb-4">What You Keep:</h3>
+            <ul class="text-emerald-100 space-y-2">
+                <li>📊 Real-time options analysis with live market data</li>
+                <li>🎯 Advanced options scanner for high-probability trades</li>
+                <li>📈 Portfolio tracking with live P&L calculations</li>
+                <li>📧 Daily trading alerts and opportunities</li>
+                <li>📱 Mobile app access for trading on-the-go</li>
+            </ul>
+        </div>
+        <div>
+            <h3 class="text-xl text-emerald-300 mb-4">Choose Payment Method:</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <button onclick="checkout('stripe')" class="bg-blue-600 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-700">💳 Pay with Card</button>
+                <button onclick="alert('PayPal payment demo')" class="bg-blue-800 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-900">🟡 PayPal</button>
+            </div>
+            <p class="text-emerald-100 mt-4 text-sm">🔒 Secure payment processing</p>
+        </div>
+        <p class="mt-6"><a href="/dashboard" class="text-emerald-300 hover:underline">← Continue Trial ({{ user.days_left_in_trial() }} days left)</a></p>
+        <script>
+            const stripe = Stripe('{{ stripe_public_key }}');
+            function checkout(method) {
+                if (method === 'stripe') {
+                    fetch('/create-checkout-session', { method: 'POST' })
+                        .then(response => response.json())
+                        .then(session => stripe.redirectToCheckout({ sessionId: session.id }))
+                        .catch(error => alert('Error: ' + error));
+                }
+            }
+        </script>
+    </div>
+</body></html>
+"""
+
+market_data_html = """
+<!DOCTYPE html>
+<html><head><title>Market Data - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans">
+    <div class="max-w-5xl mx-auto p-6">
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6">📊 Live Market Data</h1>
+        <p>Market Status: <strong>{{ market_status.status }}</strong></p>
+        <p>Next Open: {{ market_status.next_open }}</p>
+        <h2 class="text-xl font-semibold text-emerald-300 mt-6 mb-4">Top Market Movers</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full border-collapse">
+                <thead>
+                    <tr class="bg-emerald-500/30">
+                        <th class="p-3 text-left">Symbol</th>
+                        <th class="p-3 text-left">Price</th>
+                        <th class="p-3 text-left">Change</th>
+                        <th class="p-3 text-left">% Change</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for mover in top_movers %}
+                    <tr class="bg-gray-800/30">
+                        <td class="p-3">{{ mover.symbol }}</td>
+                        <td class="p-3">${{ mover.price|round(2) }}</td>
+                        <td class="p-3 {{ 'text-emerald-400' if mover.change >= 0 else 'text-red-400' }}">{{ mover.change|round(2) }}</td>
+                        <td class="p-3 {{ 'text-emerald-400' if mover.change_percent >= 0 else 'text-red-400' }}">{{ mover.change_percent|round(2) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p class="mt-6">
+            <a href="/" class="text-emerald-300 hover:underline">Home</a> | 
+            <a href="/login" class="text-emerald-300 hover:underline">Login</a>
+        </p>
+    </div>
+</body></html>
+"""
+
+mobile_demo_html = """
+<!DOCTYPE html>
+<html><head><title>Mobile Demo - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
+    <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl text-center">
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6">📱 ShadowStrike Mobile Demo</h1>
+        <p class="text-emerald-100 mb-6">Experience our mobile app with the same powerful features!</p>
+        <div class="bg-emerald-500/10 p-6 rounded-lg mb-6">
+            <p class="text-emerald-100">Download the ShadowStrike app for iOS or Android to trade on-the-go.</p>
+            <p class="text-emerald-100 mt-4">Full app coming soon!</p>
+        </div>
+        <a href="/login" class="block bg-emerald-500 text-white py-3 px-6 rounded-lg font-bold hover:bg-emerald-600">Back to Login</a>
+    </div>
+</body></html>
+"""
+
+os.makedirs("templates", exist_ok=True)
+for name, content in [
+    ("welcome.html", welcome_html),
+    ("login.html", login_html),
+    ("register.html", register_html),
+    ("reset_password.html", reset_password_html),
+    ("dashboard.html", dashboard_html),
+    ("subscribe.html", subscribe_html),
+    ("market_data.html", market_data_html),
+    ("mobile_demo.html", mobile_demo_html)
+]:
+    with open(f"templates/{name}", "w") as f:
+        f.write(content)
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)

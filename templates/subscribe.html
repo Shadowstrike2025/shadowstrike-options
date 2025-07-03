@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html><head><title>Subscribe - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://js.stripe.com/v3/"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
+    <div class="max-w-2xl mx-auto bg-gray-800/50 p-10 rounded-2xl shadow-2xl text-center">
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6">💳 Continue Your Trading Success</h1>
+        <p class="text-lg text-emerald-100 mb-8">Don't lose access to profitable trading opportunities!</p>
+        <div class="bg-red-500/20 p-6 rounded-lg mb-8">
+            <h2 class="text-xl text-red-300">⏰ {{ user.days_left_in_trial() }} Days Left in Trial</h2>
+        </div>
+        <div class="text-4xl font-bold text-emerald-400 mb-8">$49/month</div>
+        <p class="text-emerald-100 mb-8">Cancel anytime • No long-term contracts</p>
+        <div class="bg-emerald-500/10 p-6 rounded-lg mb-8">
+            <h3 class="text-xl text-emerald-300 mb-4">What You Keep:</h3>
+            <ul class="text-emerald-100 space-y-2">
+                <li>📊 Real-time options analysis with live market data</li>
+                <li>🎯 Advanced options scanner for high-probability trades</li>
+                <li>📈 Portfolio tracking with live P&L calculations</li>
+                <li>📧 Daily trading alerts and opportunities</li>
+                <li>📱 Mobile app access for trading on-the-go</li>
+            </ul>
+        </div>
+        <div>
+            <h3 class="text-xl text-emerald-300 mb-4">Choose Payment Method:</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <button onclick="checkout('stripe')" class="bg-blue-600 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-700">💳 Pay with Card</button>
+                <button onclick="alert('PayPal payment demo')" class="bg-blue-800 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-900">🟡 PayPal</button>
+            </div>
+            <p class="text-emerald-100 mt-4 text-sm">🔒 Secure payment processing</p>
+        </div>
+        <p class="mt-6"><a href="/dashboard" class="text-emerald-300 hover:underline">← Continue Trial ({{ user.days_left_in_trial() }} days left)</a></p>
+        <script>
+            const stripe = Stripe('{{ stripe_public_key }}');
+            function checkout(method) {
+                if (method === 'stripe') {
+                    fetch('/create-checkout-session', { method: 'POST' })
+                        .then(response => response.json())
+                        .then(session => stripe.redirectToCheckout({ sessionId: session.id }))
+                        .catch(error => alert('Error: ' + error));
+                }
+            }
+        </script>
+    </div>
+</body></html>

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html><head><title>Market Data - ShadowStrike Options</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans">
+    <div class="max-w-5xl mx-auto p-6">
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6">📊 Live Market Data</h1>
+        <p>Market Status: <strong>{{ market_status.status }}</strong></p>
+        <p>Next Open: {{ market_status.next_open }}</p>
+        <h2 class="text-xl font-semibold text-emerald-300 mt-6 mb-4">Top Market Movers</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full border-collapse">
+                <thead>
+                    <tr class="bg-emerald-500/30">
+                        <th class="p-3 text-left">Symbol</th>
+                        <th class="p-3 text-left">Price</th>
+                        <th class="p-3 text-left">Change</th>
+                        <th class="p-3 text-left">% Change</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for mover in top_movers %}
+                    <tr class="bg-gray-800/30">
+                        <td class="p-3">{{ mover.symbol }}</td>
+                        <td class="p-3">${{ mover.price|round(2) }}</td>
+                        <td class="p-3 {{ 'text-emerald-400' if mover.change >= 0 else 'text-red-400' }}">{{ mover.change|round(2) }}</td>
+                        <td class="p-3 {{ 'text-emerald-400' if mover.change_percent >= 0 else 'text-red-400' }}">{{ mover.change_percent|round(2) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <p class="mt-6">
+            <a href="/" class="text-emerald-300 hover:underline">Home</a> | 
+            <a href="/login" class="text-emerald-300 hover:underline">Login</a>
+        </p>
+    </div>
+</body></html>
