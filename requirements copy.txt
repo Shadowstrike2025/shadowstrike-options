@@ -1,0 +1,11 @@
+flask
+flask_sqlalchemy
+flask_cors
+yfinance
+pandas
+numpy
+ta
+scipy
+firebase_admin
+sendgrid
+stripe
