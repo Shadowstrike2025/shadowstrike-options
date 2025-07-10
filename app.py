@@ -15,13 +15,54 @@ from retry import retry
 import firebase_admin
 from firebase_admin import auth, credentials
 from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail
 import threading
 import stripe
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+import requests
+
+# Brevo config
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY")
+BREVO_SENDER = {"name": "ShadowStrike Options", "email": "support@shadowstrike.com"}
+BREVO_SMS_SENDER = "2154843692"
+
+def send_email_async(to_email, subject, content):
+    try:
+        headers = {
+            "api-key": BREVO_API_KEY,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "sender": BREVO_SENDER,
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "htmlContent": content
+        }
+        response = requests.post("https://api.brevo.com/v3/smtp/email", json=data, headers=headers)
+        logger.info(f"Brevo email to {to_email} sent: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Brevo email error: {e}")
+
+def send_sms(to_number, message):
+    try:
+        headers = {
+            "api-key": BREVO_API_KEY,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "sender": BREVO_SMS_SENDER,
+            "recipient": to_number,
+            "content": message,
+            "type": "transactional"
+        }
+        response = requests.post("https://api.brevo.com/v1/transactionalSMS/sms", json=data, headers=headers)
+        logger.info(f"Brevo SMS to {to_number} sent: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Brevo SMS error: {e}")
 
 # Initialize Flask
 app = Flask(__name__)
@@ -30,8 +71,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:/
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Email Configuration (SendGrid)
-app.config['SENDGRID_API_KEY'] = os.environ.get('SENDGRID_API_KEY', 'your-sendgrid-api-key')
-sendgrid_client = SendGridAPIClient(app.config['SENDGRID_API_KEY'])
 
 # Firebase Configuration
 try:
@@ -97,7 +136,7 @@ def send_welcome_email(user_email, username):
     <html>
     <body style="font-family: Arial; background: #1f2937; color: white; padding: 40px;">
         <div style="max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px;">
-            <h1 style="color: #ffffff; text-align: center;">🎯 Welcome to ShadowStrike Options!</h1>
+            <h1 style="color: #ffffff; text-align: center;"> Welcome to ShadowStrike Options!</h1>
             <h2>Hello {username}!</h2>
             <p>Your 30-day free trial has begun! After your trial, continue for just $49/month.</p>
             <div style="text-align: center; margin: 30px 0;">
@@ -263,7 +302,7 @@ def initialize_database():
         logger.info("Database initialized successfully!")
         return """
         <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-        <h1>✅ Database Initialized!</h1>
+        <h1> Database Initialized!</h1>
         <p>ShadowStrike Options database ready!</p>
         <a href="/login" style="background: #10b981; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Go to Login</a>
         </body></html>
@@ -272,7 +311,7 @@ def initialize_database():
         logger.error(f"Database initialization error: {e}")
         return """
         <html><body style="background: linear-gradient(135deg, #1f2937 0%, #065f46 100%); color: white; font-family: Arial; text-align: center; padding: 50px;">
-        <h1>❌ Database Initialization Failed</h1>
+        <h1> Database Initialization Failed</h1>
         <p>Check the logs for more details</p>
         <a href="/">Back to Home</a>
         </body></html>
@@ -466,7 +505,7 @@ def get_top10():
             <html>
             <body style="font-family: Arial; background: #1f2937; color: white; padding: 40px;">
                 <div style="max-width: 600px; margin: 0 auto; background: linear-gradient(135deg, #065f46, #10b981); padding: 30px; border-radius: 15px;">
-                    <h1 style="color: #ffffff; text-align: center;">🎯 Daily Top 10 Picks</h1>
+                    <h1 style="color: #ffffff; text-align: center;"> Daily Top 10 Picks</h1>
                     <ul>{''.join([f"<li>{item['symbol']} {item['type']} ${item['strike'] or item['buy_strike']}: {item['probabilityITM']}% ITM</li>" for item in results[:10]])}</ul>
                 </div>
             </body>
@@ -591,7 +630,7 @@ welcome_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
     <div class="max-w-2xl mx-auto bg-gray-800/50 p-10 rounded-2xl shadow-2xl text-center">
-        <h1 class="text-4xl font-bold text-emerald-400 mb-6">🎯 ShadowStrike Options</h1>
+        <h1 class="text-4xl font-bold text-emerald-400 mb-6"> ShadowStrike Options</h1>
         <p class="text-lg text-emerald-100 mb-8">Elite Trading Platform for Options Traders</p>
         <div class="space-y-4">
             <a href="/login" class="block bg-emerald-500 text-white py-3 px-6 rounded-lg font-bold hover:bg-emerald-600 transition">Login</a>
@@ -609,7 +648,7 @@ login_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
     <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl">
-        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6">🎯 ShadowStrike Options</h1>
+        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6"> ShadowStrike Options</h1>
         <h2 class="text-xl text-center mb-6">Login</h2>
         <form method="POST" class="space-y-4">
             <div>
@@ -637,7 +676,7 @@ register_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
     <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl">
-        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6">🎯 ShadowStrike Options</h1>
+        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6"> ShadowStrike Options</h1>
         <h2 class="text-xl text-center mb-6">Register</h2>
         <form method="POST" class="space-y-4">
             <div>
@@ -672,7 +711,7 @@ reset_password_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
     <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl">
-        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6">🎯 Reset Password</h1>
+        <h1 class="text-3xl font-bold text-emerald-400 text-center mb-6"> Reset Password</h1>
         <form method="POST" class="space-y-4">
             <div>
                 <label class="block text-emerald-300">Email</label>
@@ -694,12 +733,12 @@ dashboard_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans">
     <div class="max-w-5xl mx-auto p-6">
-        <h1 class="text-3xl font-bold text-emerald-400 mb-6">🎯 ShadowStrike Options - Dashboard</h1>
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6"> ShadowStrike Options - Dashboard</h1>
         <p class="text-emerald-100">Welcome {{ user.username }}! ({{ user.subscription_status }} - {% if user.subscription_status == 'trial' %}{{ user.days_left_in_trial() }} days left{% else %}Active{% endif %})</p>
         
         {% if user.subscription_status == 'trial' and user.days_left_in_trial() <= 7 %}
         <div class="bg-red-500/20 p-4 rounded-lg mb-6">
-            <p class="text-red-300">⏰ Trial expires in {{ user.days_left_in_trial() }} days! <a href="/subscribe" class="text-emerald-300 hover:underline">Subscribe now</a></p>
+            <p class="text-red-300"> Trial expires in {{ user.days_left_in_trial() }} days! <a href="/subscribe" class="text-emerald-300 hover:underline">Subscribe now</a></p>
         </div>
         {% endif %}
         
@@ -785,32 +824,32 @@ subscribe_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
     <div class="max-w-2xl mx-auto bg-gray-800/50 p-10 rounded-2xl shadow-2xl text-center">
-        <h1 class="text-3xl font-bold text-emerald-400 mb-6">💳 Continue Your Trading Success</h1>
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6"> Continue Your Trading Success</h1>
         <p class="text-lg text-emerald-100 mb-8">Don't lose access to profitable trading opportunities!</p>
         <div class="bg-red-500/20 p-6 rounded-lg mb-8">
-            <h2 class="text-xl text-red-300">⏰ {{ user.days_left_in_trial() }} Days Left in Trial</h2>
+            <h2 class="text-xl text-red-300"> {{ user.days_left_in_trial() }} Days Left in Trial</h2>
         </div>
         <div class="text-4xl font-bold text-emerald-400 mb-8">$49/month</div>
-        <p class="text-emerald-100 mb-8">Cancel anytime • No long-term contracts</p>
+        <p class="text-emerald-100 mb-8">Cancel anytime  No long-term contracts</p>
         <div class="bg-emerald-500/10 p-6 rounded-lg mb-8">
             <h3 class="text-xl text-emerald-300 mb-4">What You Keep:</h3>
             <ul class="text-emerald-100 space-y-2">
-                <li>📊 Real-time options analysis with live market data</li>
-                <li>🎯 Advanced options scanner for high-probability trades</li>
-                <li>📈 Portfolio tracking with live P&L calculations</li>
-                <li>📧 Daily trading alerts and opportunities</li>
-                <li>📱 Mobile app access for trading on-the-go</li>
+                <li> Real-time options analysis with live market data</li>
+                <li> Advanced options scanner for high-probability trades</li>
+                <li> Portfolio tracking with live P&L calculations</li>
+                <li> Daily trading alerts and opportunities</li>
+                <li> Mobile app access for trading on-the-go</li>
             </ul>
         </div>
         <div>
             <h3 class="text-xl text-emerald-300 mb-4">Choose Payment Method:</h3>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <button onclick="checkout('stripe')" class="bg-blue-600 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-700">💳 Pay with Card</button>
-                <button onclick="alert('PayPal payment demo')" class="bg-blue-800 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-900">🟡 PayPal</button>
+                <button onclick="checkout('stripe')" class="bg-blue-600 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-700"> Pay with Card</button>
+                <button onclick="alert('PayPal payment demo')" class="bg-blue-800 text-white py-4 px-6 rounded-lg font-bold hover:bg-blue-900"> PayPal</button>
             </div>
-            <p class="text-emerald-100 mt-4 text-sm">🔒 Secure payment processing</p>
+            <p class="text-emerald-100 mt-4 text-sm"> Secure payment processing</p>
         </div>
-        <p class="mt-6"><a href="/dashboard" class="text-emerald-300 hover:underline">← Continue Trial ({{ user.days_left_in_trial() }} days left)</a></p>
+        <p class="mt-6"><a href="/dashboard" class="text-emerald-300 hover:underline"> Continue Trial ({{ user.days_left_in_trial() }} days left)</a></p>
         <script>
             const stripe = Stripe('{{ stripe_public_key }}');
             function checkout(method) {
@@ -833,7 +872,7 @@ market_data_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans">
     <div class="max-w-5xl mx-auto p-6">
-        <h1 class="text-3xl font-bold text-emerald-400 mb-6">📊 Live Market Data</h1>
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6"> Live Market Data</h1>
         <p>Market Status: <strong>{{ market_status.status }}</strong></p>
         <p>Next Open: {{ market_status.next_open }}</p>
         <h2 class="text-xl font-semibold text-emerald-300 mt-6 mb-4">Top Market Movers</h2>
@@ -874,7 +913,7 @@ mobile_demo_html = """
 </head>
 <body class="bg-gradient-to-br from-gray-900 to-emerald-900 text-white font-sans flex items-center justify-center min-h-screen">
     <div class="max-w-md mx-auto bg-gray-800/50 p-8 rounded-2xl shadow-2xl text-center">
-        <h1 class="text-3xl font-bold text-emerald-400 mb-6">📱 ShadowStrike Mobile Demo</h1>
+        <h1 class="text-3xl font-bold text-emerald-400 mb-6"> ShadowStrike Mobile Demo</h1>
         <p class="text-emerald-100 mb-6">Experience our mobile app with the same powerful features!</p>
         <div class="bg-emerald-500/10 p-6 rounded-lg mb-6">
             <p class="text-emerald-100">Download the ShadowStrike app for iOS or Android to trade on-the-go.</p>
