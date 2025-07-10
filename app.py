@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import logging
 import yfinance as yf
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, ADXIndicator, PPOIndicator
+from ta.trend import MACD, ADXIndicator
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
@@ -63,6 +63,7 @@ def send_sms(to_number, message):
         logger.info(f"Brevo SMS to {to_number} sent: {response.status_code}")
     except Exception as e:
         logger.error(f"Brevo SMS error: {e}")
+
 
 # Initialize Flask
 app = Flask(__name__)
@@ -238,8 +239,7 @@ def analyze_stock(symbol):
         df['RSI'] = RSIIndicator(df['Close']).rsi()
         df['MACD'] = MACD(df['Close']).macd_diff()
         df['ADX'] = ADXIndicator(df['High'], df['Low'], df['Close']).adx()
-        df['PPO'] = PPOIndicator(df['Close']).ppo()
-        df['MA25'] = df['Close'].rolling(window=25).mean()
+                df['MA25'] = df['Close'].rolling(window=25).mean()
         df['MA50'] = df['Close'].rolling(window=50).mean()
         df['MA150'] = df['Close'].rolling(window=150).mean()
         
@@ -254,10 +254,8 @@ def analyze_stock(symbol):
             signals.append("MACD Crossover (Bullish)")
         elif latest['MACD'] < 0 and df['MACD'].iloc[-2] >= 0:
             signals.append("MACD Crossover (Bearish)")
-        if latest['PPO'] > 0 and df['PPO'].iloc[-2] <= 0:
-            signals.append("PPO Crossover (Bullish)")
-        elif latest['PPO'] < 0 and df['PPO'].iloc[-2] >= 0:
-            signals.append("PPO Crossover (Bearish)")
+                    signals.append("PPO Crossover (Bullish)")
+        el            signals.append("PPO Crossover (Bearish)")
         if latest['Close'] > latest['MA50'] and df['Close'].iloc[-2] <= df['MA50'].iloc[-2]:
             signals.append("Price/MA50 Crossover (Bullish)")
         
@@ -274,7 +272,6 @@ def analyze_stock(symbol):
                 "RSI": round(latest['RSI'], 2),
                 "MACD": round(latest['MACD'], 2),
                 "ADX": round(latest['ADX'], 2),
-                "PPO": round(latest['PPO'], 2),
                 "MA25": round(latest['MA25'], 2),
                 "MA50": round(latest['MA50'], 2),
                 "MA150": round(latest['MA150'], 2),
