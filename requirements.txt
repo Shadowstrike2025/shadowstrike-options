@@ -9,3 +9,4 @@ scipy
 firebase_admin
 sendgrid
 stripe
+gunicorn
