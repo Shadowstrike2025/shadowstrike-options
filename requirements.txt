@@ -10,3 +10,4 @@ firebase_admin
 sendgrid
 stripe
 gunicorn
+ta==0.10.2
